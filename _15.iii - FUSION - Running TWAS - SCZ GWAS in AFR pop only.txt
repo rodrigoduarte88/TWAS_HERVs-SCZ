@@ -1,0 +1,495 @@
+# Perform the TWAS, changing gwas input file, but using AFR CMC ref pop.
+
+###################### ~/fusion_multi_trait_CMCpanel_AFR_all_1_batch.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+
+# echo "Analyzing ${TRAIT_ANCESTRY}... Chromosome ${CHROMOSOME}"
+
+#trait_ancestries=("schizophrenia_AFR")
+# CHR=${SLURM_ARRAY_TASK_ID}
+CHROMOSOME=${SLURM_ARRAY_TASK_ID}
+# for trait_ancestry in ${trait_ancestries[@]}; do
+TRAIT_ANCESTRY="schizophrenia_AFR"
+
+	sumstats=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/${TRAIT_ANCESTRY}.gwas.fusion
+	weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos"
+	weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1"
+	ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF/CHR."
+	out_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/"${TRAIT_ANCESTRY}
+	mkdir -p ${out_dir}
+	fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+	Rscript --verbose --no-save ${fusion_software_dir}/FUSION.assoc_test.R \
+	--sumstats ${sumstats} \
+	--weights ${weights_pos_file} \
+	--weights_dir ${weights_dir} \
+	--ref_ld_chr ${ref_ld} \
+	--chr ${CHROMOSOME} \
+	--out ${out_dir}/trait.${CHROMOSOME}.dat
+#done
+
+
+###############################################################################
+
+
+#sbatch --array=1-22 ~/fusion_multi_trait_CMCpanel_AFR_all_1_trigger.sh
+sbatch --array=1-22  ~/fusion_multi_trait_CMCpanel_AFR_all_1_batch.sh
+
+
+ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat | wc -l # 6316
+
+# combine results to see whether there are significant features, without duplicating header, create Sig file, and generate manhattan biplot, per trait
+conda activate fusion_final
+trait_ancestries=("schizophrenia_AFR")
+for trait_ancestry in ${trait_ancestries[@]}; do
+	cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/${trait_ancestry}
+	echo Analysing ${trait_ancestry}
+	head -1  trait.1.dat > trait_____all_chr.tsv
+	tail -n +2 -q trait.* >> trait_____all_chr.tsv
+	pvalue=0.05
+	number_of_unique_genes=6316 # this is the number of RDat files in the SNP weights
+	bonferroni_p=`bc -l <<< "scale=50; $pvalue/$number_of_unique_genes"`
+	results_twas_combined="trait_____all_chr.tsv"
+	significant_file=${results_twas_combined}".Sig" 
+	cat ${results_twas_combined} | awk -v var="${bonferroni_p}" 'NR == 1 || $20 < var' > ${significant_file}
+	Rscript ~/scratch/programs/twas-plotter/TWAS-plotter/TWAS-plotter.V1.0.r --twas trait_____all_chr.tsv --width 4000 --height 2500 --output TWAS_plotter_sig_unique_elements_${trait_ancestry}
+	echo How many HERVs?
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" | wc -l
+	echo HERV names:
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" 
+	yes '' | sed 5q
+done > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/Results_AFR.txt
+
+# Inspect summary in "Results_AFR.txt"
+
+# There is nothing - the GWAS is too underpowered. Won't run fine-mapping, but it may be worth leaving the weights publicly available, alongside the FOCUS weights.
+
+
+
+conda activate focus
+module load mesa-glu/9.0.1-gcc-9.4.0  # loads libGL.so.1 / mesagl, required.
+
+
+# modify POS file to include DIR columns 
+R
+pos <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos", stringsAsFactors=F,h=T)
+pos$DIR <- paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1")
+write.table(pos, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped_2.pos", quote=F, col.names=T, row.names=F)
+quit("no")
+
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/focus_weights && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/focus_weights
+focus import /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped_2.pos fusion --tissue CMC --name CMC --output /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/focus_weights/CMC_brain_focus_database
+
+# final DB is /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/focus_weights/CMC_brain_focus_database.db
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+###################### ~/fusion_SCZ_weights_AFR_all_1.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+
+trait="PGZ_SCZ3"
+CHR=${SLURM_ARRAY_TASK_ID}
+sumstats="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia.gwas.fusion"
+weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos"
+weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1"
+# Note: using the ldref from CMC, not 1000 Genomes as reference panel -  it will reduce LD misspecification with the TWAS models (as performed in Gusev, A., Mancuso, N., Won, H. et al. Transcriptome-wide association study of schizophrenia and chromatin activity yields mechanistic disease insights. Nat Genet 50, 538–548 (2018). https://doi.org/10.1038/s41588-018-0092-1)
+ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF/CHR."
+out_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/"${trait}
+mkdir -p ${out_dir}
+fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+
+Rscript --verbose --no-save ${fusion_software_dir}/FUSION.assoc_test.R \
+--sumstats ${sumstats} \
+--weights ${weights_pos_file} \
+--weights_dir ${weights_dir} \
+--ref_ld_chr ${ref_ld} \
+--chr ${CHR} \
+--out ${out_dir}/${trait}.${CHR}.dat
+
+###############################################################################
+
+sbatch --array=1-22 ~/fusion_SCZ_weights_AFR_all_1.sh
+
+grep "NOTE: " ~/logs/fusion_SCZ_weights_AFR_all_1.sh-*  # all worked
+# sacct -l -j 779213 | grep "FAILED" # another way to check jobs "COMPLETED" or "FAILED"
+
+# combine results to see whether there are significant features, without duplicating header
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3
+ls *.dat* | wc -l # 23 (22 chromosomes plus MHC)
+head -1  PGZ_SCZ3.1.dat > SCZ_____all_chr.tsv
+tail -n +2 -q PGZ_SCZ3.* >> SCZ_____all_chr.tsv
+
+wc -l SCZ_____all_chr.tsv # 8195 - header = 8194
+
+# how many features were included in the weights folder?
+ls  /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat  | wc -l # 8194
+wc -l /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos # 8195 - header = 8194
+# all genes accounted for.
+
+# How many are HERVs?
+| sed 's|.wgt.RDat||g' | sed 's|/||g' | grep "_" | wc -l # 1238
+
+
+
+##################
+#  Multiple testing correction, and some toying with the data - Plot HERVs only, quantify how many HERVs are significant, etc.
+##################
+conda activate fusion_final
+R
+library(data.table)
+twas <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv", stringsAsFactors=F)
+table(is.na(twas$TWAS.P))
+twas <- twas[!is.na(twas$TWAS.P),]  # There were some NAs - remove!
+# overwrite TWAS file to remove rows with NAs.
+write.table(twas, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv", sep="\t", quote=F, row.names=F, col.names=T)
+dim(twas) # 8207 (-5 rows that were removed because they had NA from fusion)
+
+# significance relative to all genetic features tested, but showing HERVs only
+# system(paste0("Rscript ~/scratch/programs/twas-plotter/TWAS-plotter/TWAS-plotter.V1.0.r --twas /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr_HERVs_only.tsv --sig_p ", 0.05/nrow(twas), " --width 4000 --height 2500 --output /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/TWAS_plotter_sig_unique_elements_HERVs_only_relative_all_feat"))
+
+twas$Bonferroni <- p.adjust(twas$`TWAS.P`, method="bonferroni")
+sig_file <- twas[twas$Bonferroni<0.05,]
+write.table(sig_file, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv.Sig", sep="\t", quote=F, row.names=F, col.names=T)
+
+# check how many hervs, from what families, located where, etc.
+twas <- sig_file
+dim(twas) # 163 significant hits
+twas <- twas[ twas$ID %like% "_", ]
+dim(twas) # 15
+nrow(twas[twas$`TWAS.Z` < 0,]) # 6 negative
+nrow(twas[twas$`TWAS.Z` > 0,]) # 9 positive
+nrow(twas[twas$CHR==6,]) # 7 in MHC (6p21-22)
+
+# breakdown by family
+per_fam <- data.frame(do.call('rbind', strsplit(as.character(twas$ID),'_',fixed=TRUE)))
+table(per_fam$X1)  # 8 elements from ERV316A3 (ERV3 superfamily), 2 from MER4, 1 each from ERVLE  HERVK11    HERVL     HML3    PRIMA4.
+
+
+
+########################
+# Manhattan biplot
+########################
+# TWAS PLOTTER, by O. Pain # https://github.com/opain/TWAS-plotter
+# install.packages(c('data.table','optparse','ggplot2','ggrepel','cowplot'))
+conda activate fusion_final
+
+# Combine all chromomsome TWAS results
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3
+
+# This script already highlights all features that are Bonferroni significant automatically.
+Rscript ~/scratch/programs/twas-plotter/TWAS-plotter/TWAS-plotter.V1.0.r \
+--twas /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv \
+--width 4000 \
+--height 2500 \
+--output /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/TWAS_plotter_sig_unique_elements
+
+
+
+########################
+# Conditional analyses
+########################
+# # calculate and specify multiple testing cut-off
+# pvalue=0.05
+# number_of_unique_genes=`ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/weights/fusion_weights_09/Output/*.RDat | wc -l`
+# bonferroni_p=`bc -l <<< "scale=50; $pvalue/$number_of_unique_genes"`
+# echo "Bonferroni cut-off is " ${bonferroni_p}
+
+# # Create file with significant hits only (bonferroni) # previously done in R
+# results_twas_combined="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv"
+# significant_file=${results_twas_combined}".Sig" 
+# cat ${results_twas_combined} | awk -v var="${bonferroni_p}" 'NR == 1 || $20 < var' > ${significant_file}
+# wc -l ${significant_file} # 170 - header = 169 hits
+
+
+###################### ~/CONDITIONAL_fusion_SCZ_weights_AFR_all_1.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+
+CHR=${SLURM_ARRAY_TASK_ID}
+sumstats="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia.gwas.fusion"
+weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos"
+weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1"
+ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF/CHR."
+fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+results_twas_combined="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv"
+significant_file=${results_twas_combined}".Sig" 
+
+# Run post-process script for chromosomes - only those containing significant genes 
+# for CHR in {1..22}; do
+    status=$(awk -v var="${CHR}" '$4 == var {print "Present";exit;}' ${significant_file})
+    if [ "$status" == "Present" ]; then
+        echo "Chromosome ${CHR} is present. Processing..."	
+        Rscript ${fusion_software_dir}/FUSION.post_process.R \
+        --input ${significant_file} \
+        --sumstats ${sumstats} \
+        --ref_ld_chr ${ref_ld} \
+        --out ${significant_file}.PostProc.${CHR} \
+        --chr ${CHR} \
+        --save_loci \
+        --plot \
+        --locus_win 1000000  
+        else
+        echo "Chromosome ${CHR} not present"
+    fi
+# done
+
+##############################################
+sbatch --array=1-22 ~/CONDITIONAL_fusion_SCZ_weights_AFR_all_1.sh
+
+tail ~/logs/CONDITIONAL_fusion_SCZ_weights_AFR_all_1.sh-11473499*
+
+# # check logs. There's something wrong with plotting one of the loci from Chr 2 (see https://github.com/gusevlab/fusion_twas/issues/49 )
+# # Increase window for Chr 2 (otherwise the graphs aren't generated). This does not impact on the conditional analysis statistics.
+# rm ~/logs/CONDITIONAL_fusion_SCZ_weights_AFR_all_1.sh-*-2.out
+
+# sumstats="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia.gwas.fusion"
+# weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/weights/fusion_weights_09/wrapped/CMC.pos"
+# weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/weights/fusion_weights_09/wrapped"
+# ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_CMC/LDREF_harmonized/1000G.AFR."
+# fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+# results_twas_combined="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv"
+# significant_file=${results_twas_combined}".Sig" 
+
+# CHR=2
+#  Rscript ${fusion_software_dir}/FUSION.post_process.R \
+#         --input ${significant_file} \
+#         --sumstats ${sumstats} \
+#         --ref_ld_chr ${ref_ld} \
+#         --out ${significant_file}.PostProc.${CHR} \
+#         --chr ${CHR} \
+#         --save_loci \
+#         --plot \
+#         --locus_win 1000000 
+
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3
+# combine results after conditional analyses, only those pertaining to HERVs. 
+head -1 SCZ_____all_chr.tsv.Sig.PostProc.1.joint_included.dat | cut -f2- > jointly_significant_HERVs
+cat SCZ_____all_chr.tsv.Sig.PostProc.*.joint_included.dat  | cut -f2- | grep "_" >> jointly_significant_HERVs 
+head jointly_significant_HERVs 
+wc -l jointly_significant_HERVs  # 7 - header = 6 HERVs 
+
+    ID      TWAS.Z  TWAS.P  JOINT.BETA      JOINT.BETA.SE   JOINT.Z JOINT.P
+. MER4_20q13.13   5.7     9.9e-09 5.7     1       5.7     1.0e-08
+. ERV316A3_2q33.1g        -7.1    1.0e-12 -5.9    1.1     -5.5    2.9e-08
+. ERV316A3_5q14.3j        -4.5    5.5e-06 -4.5    1.0     -4.5    5.5e-06
+ERVLE_5q31.3b    4.9    9.1e-07  3.4    1.1      3.2    1.5e-03
+. ERV316A3_6p21.33c         8.1   7.7e-16  -29.2   2.4    -12.0   3.2e-33
+ERV316A3_6p22.1n         -8.4   3.4e-17   -9.7   1.7     -5.8   5.7e-09
+
+##############
+# PREVIOUSLY #
+##############
+# ID      TWAS.Z  TWAS.P  JOINT.BETA      JOINT.BETA.SE   JOINT.Z JOINT.P
+# ERV316A3_17q21.31        6.0    2.6e-09  6.0    1        6.0    2.5e-09
+# HERVIP10FH_1q25.1       -4.7    2.2e-06 -4.7    1       -4.7    2.2e-06
+. # MER4_20q13.13   5.7     1.1e-08 5.7     1       5.7     1.1e-08
+. # ERV316A3_2q33.1g        -7.2    4.4e-13 -7.2    1       -7.2    4.4e-13
+# HERVL40_4q33    -4.7    2.3e-06 -4.7    1       -4.7    2.3e-06
+. # ERV316A3_5q14.3j        -4.5    5.8e-06 -4.5    1       -4.5    5.8e-06
+# ERVLB4_5q21.3a  -4.5    5.8e-06 -4.5    1       -4.5    5.8e-06
+# ERV316A3_6p21.33c        6.9    4.2e-12  10.4   1.5       7.1   1.1e-12
+# HERVL40_8q21.3b  5.2    2.2e-07  5.2    1        5.2    2.2e-07
+
+# Which ones were dropped?  
+head -1 SCZ_____all_chr.tsv.Sig.PostProc.1.joint_dropped.dat | cut -f2- > dropped_in_conditional_analysis_HERVs
+cat SCZ_____all_chr.tsv.Sig.PostProc.*.joint_dropped.dat  | cut -f2- | grep "_" >> dropped_in_conditional_analysis_HERVs
+head dropped_in_conditional_analysis_HERVs
+wc -l dropped_in_conditional_analysis_HERVs # 10 - header = 9 HERVs
+
+
+ID      TWAS.Z  TWAS.P  COND.BETA       COND.BETA.SE    COND.Z  COND.P
+HERVK11_10q24.32        -5.2    2.3e-07 -5.17   0.35    -15.0   7.9e-51
+MER4_16q24.3     4.7    2.5e-06  0.62   0.67     0.93   0.355
+ERV316A3_17q21.31        6.0    2.3e-09  1.6    0.69     2.2    0.025
+PRIMA4_2p13.1    4.6    3.5e-06 -0.41   0.27    -1.5    0.134
+ERV316A3_6p21.33b       -4.5    5.7e-06  -5.5   0.52    -10.7   1.4e-26
+HERVL_6q14.2     4.7    3.2e-06   2.7   0.92      3.0   2.8e-03
+ERV316A3_6p22.1b        -8.8    2.0e-18  31.1     NA       NA        NA
+ERV316A3_6p22.1h         5.8    4.9e-09  16.8     NA       NA        NA
+HML3_6p22.1      5.2    1.7e-07 -21.1     NA       NA        NA
+
+##############
+# PREVIOUSLY #
+##############
+# ID      TWAS.Z  TWAS.P  COND.BETA       COND.BETA.SE    COND.Z  COND.P
+# HERVK11_10q24.32        -5.2    2.3e-07  0.600  0.69     0.869  3.8e-01
+# MER4_16q24.3     5.1    4.0e-07  1.15   0.67     1.72   0.0851
+# PRIMA4_2p13.1    5.0    4.5e-07 -0.16   0.27    -0.59   0.558
+# HERVL_6q14.2      5.4   6.7e-08   0.39  0.43      0.91  3.7e-01
+# ERV316A3_6p22.1b         -6.9   5.0e-12  -6.18    NA        NA       NA
+# ERV316A3_6p22.1h          6.4   1.6e-10  20.71    NA        NA       NA
+# HML3_6p22.1       5.3   9.3e-08  -8.10  0.56    -14.47  2.0e-47
+# ERV316A3_6p22.1n         -7.7   1.2e-14  17.84    NA        NA       NA
+########################################
+
+
+# combine results after conditional analyses, refseq and HERVs. 
+head -1 SCZ_____all_chr.tsv.Sig.PostProc.1.joint_included.dat | cut -f2- > jointly_significant_HERVs_and_genes
+cat SCZ_____all_chr.tsv.Sig.PostProc.*.joint_included.dat  | cut -f2- | grep -v "TWAS.Z" >> jointly_significant_HERVs_and_genes
+
+
+
+# Following chunks just code for playing with the data.
+# ######################
+# # Ollie Pain's TWAS plotter for conditional analysis 
+# ######################
+# # prepare coordinates_file with header
+# weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/weights/fusion_weights_09/fusion_weights/CMC.pos"
+# coordinate_file=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights/coordinates_file_genes_and_hervs_hg19.txt
+
+# sed  "s/X.Chr start end ID/CHR P0 P1 ID/g" ${coordinate_file} > ${coordinate_file}_adapted4twasplotter
+
+# # for CHR in $(seq 1 22); do
+# CHR=2
+#     status=$(awk -v var="${CHR}" '$4 == var {print "Present";exit;}' ${significant_file} )
+#     if [ "$status" == "Present" ]; then
+#         echo "Chromosome ${CHR} is present. Processing..."	
+#         Rscript ~/scratch/programs/twas-plotter/TWAS-plotter/TWAS-locus-plotter.V1.0.r \
+#             --twas ${significant_file}  \
+#             --pos ${weights_pos_file} \
+#             --post_proc_prefix ${significant_file}.PostProc.${CHR} \
+#             --window 0.5e6 \
+#             --gene_loc ${coordinate_file}_adapted4twasplotter
+#     else
+#         echo "Chromosome ${CHR} not present. Skipping..."
+#     fi
+# done
+
+
+# #####################
+# # Create qq-plot from TWAS results # see https://opain.github.io/MDD-TWAS/MDD_TWAS.html#212_twas_analysis
+# #####################
+# # load file with all hits - not just sign, ones
+# conda activate fusion_final
+# R
+
+# # install.packages("QCEWAS") # for lambda calculation using "P_lambda(p)"
+# library(QCEWAS)   
+# library(data.table)
+# library(ggplot2)
+
+# twas <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_____all_chr.tsv", header=T, stringsAsFactors = F)
+# twas_no_hervs <- twas[ !twas$ID %like% "_", ]
+
+# # Plotting function
+#     ggd.qqplot = function(pvector, main=NULL, ...) {
+#     o = -log10(sort(pvector,decreasing=F))
+#     e = -log10( 1:length(o)/length(o) )
+#     plot(e,o,pch=19,cex=1, main=main, ...,
+#         xlab=expression(Expected~~-log[10](italic(p))),
+#         ylab=expression(Observed~~-log[10](italic(p))),
+#         xlim=c(0,max(e)), ylim=c(0,max(o)))
+#     lines(e,e,col="red")
+#     }
+# # collect P values and plot qqplot with HERVs
+# pvalues <- twas$TWAS.P
+# png("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_TWAS_QQplot_hervs_and_genes.png",width = 2000, height = 2000, units = "px", res=300)
+# ggd.qqplot(pvalues, "QQ-plot of TWAS p-values")
+# dev.off() 
+# # calculate lambda
+# P_lambda(pvalues) #  2.322445
+
+# # collect P values and plot qqplot with no HERVs
+# pvalues <- twas_no_hervs$TWAS.P
+# png("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_TWAS_QQplot_genes_only.png",width = 2000, height = 2000, units = "px", res=300)
+# ggd.qqplot(pvalues, "QQ-plot of TWAS p-values")
+# dev.off() 
+# P_lambda(pvalues) #  2.410581 # (not statistically significant under a CI of 95%)
+
+
+# # Histograms of p-values
+# png("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_TWAS_pValHist_hervs_and_genes.png",width = 2000, height = 2000, units = "px", res=300)
+# hist(twas$TWAS.P,
+#     main = "Histogram of TWAS p-values",  
+#     xlab ="P-values", 
+#     ylab = "Frequency")
+# dev.off()
+
+# png("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/PGZ_SCZ3/SCZ_TWAS_pValHist_genes_only.png",width = 2000, height = 2000, units = "px", res=300)
+# hist(twas_no_hervs$TWAS.P,
+#     main = "Histogram of TWAS p-values",  
+#     xlab ="P-values", 
+#     ylab = "Frequency")
+# dev.off()
+
+
+###################

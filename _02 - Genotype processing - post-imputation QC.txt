@@ -1,0 +1,184 @@
+################################
+### 1) Download imputed files and unzip
+################################
+
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/1M
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/CMC1
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/Omni5M
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/h650
+
+# download
+conda activate general # use 7zip
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/1M
+curl -sL xxxx | bash
+for i in {1..22}; do 7z x -p'xxxx' chr_${i}.zip; done
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/CMC1
+curl -sL xxxx | bash
+for i in {1..22}; do 7z x -p'xxxx' chr_${i}.zip; done
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/Omni5M
+curl -sL xxxx | bash
+for i in {1..22}; do 7z x -p'xxxx' chr_${i}.zip; done
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/h650 
+curl -sL xxxx | bash
+for i in {1..22}; do 7z x -p'xxxx' chr_${i}.zip; done
+
+################################
+### pre-filtering, multiple chromosome files per chip.
+################################
+
+ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/*/chr*.zip | wc -l # 88
+
+
+############################## /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/postimputation_processing_1.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu,interruptible_cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=40000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+	#	NO NEED -> SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time
+
+echo "Chip " ${CHIP}
+echo "Chromosome " ${CHROMOSOME}
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+conda activate general
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/${CHIP}
+
+# remove variants with imputation R2 < 0.8
+bcftools view --include 'R2>0.80' chr${CHROMOSOME}.dose.vcf.gz | bgzip --force > chr${CHROMOSOME}.dose_1.vcf.gz
+
+# convert to plink format, outputting only biallelic ACTG SNPs
+plink --vcf chr${CHROMOSOME}.dose_1.vcf.gz --const-fid 0 --make-bed --snps-only just-acgt --biallelic-only strict --out chr${CHROMOSOME}.dose_1
+
+###################################################################
+
+chip_ids=("h650" "Omni5M" "1M" "CMC1")
+for chip in "${chip_ids[@]}"
+do
+for CHR in {1..22}
+do
+echo Submitting chip ${chip} and chromosome ${CHR} script... done
+sbatch --export=CHIP=${chip},CHROMOSOME=${CHR} /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/postimputation_processing_1.sh
+sleep 0.5
+done
+done
+
+
+################################
+### merge chromosome files per chip, filter, add phenotype information to fam files
+################################
+
+###################################################### /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/postimputation_processing_2.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu,interruptible_cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=40000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+	#	NO NEED -> SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time
+
+
+echo "Chip " ${CHIP}
+#echo "Chromosome " ${CHROMOSOME}
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/${CHIP}
+
+# concatenate files from multiple chromosomes into a single file
+rm -f multiple_chromosomes_filenames.txt && for i in {1..22}; do echo chr${i}.dose_1 >> multiple_chromosomes_filenames.txt; done
+
+# then use the file to merge all chr, per chip
+plink --merge-list multiple_chromosomes_filenames.txt --make-bed --out ${CHIP}_genotypes_0
+
+# Add individual-level information to fam files
+conda activate ldsc_R
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/repopulate_pheno_info_for_fam_files.R ${CHIP}_genotypes_0 ${CHIP}_genotypes_1 
+ 
+# quick QC
+plink --bfile ${CHIP}_genotypes_1 --maf 0.01 --geno 0.10 --hwe 1e-6 --mind 0.10 --make-bed --out ${CHIP}_genotypes_2
+plink --bfile ${CHIP}_genotypes_2 --maf 0.01 --geno 0.05 --hwe 1e-10 include-nonctrl --mind 0.05 --make-bed --out ${CHIP}_genotypes_3
+plink --bfile ${CHIP}_genotypes_3 --maf 0.01 --geno 0.05 --hwe 1e-10 include-nonctrl --mind 0.05 --make-bed --out ${CHIP}_genotypes_4
+
+# Annotate rs IDs by assigning SNP ids to the bim file - script outputs only ACTG biallelic SNPs 
+conda activate ldsc_R
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/annotate_rsids_in_bim_file.R ${CHIP}_genotypes_4 ${CHIP}_genotypes_5
+
+
+######################################################
+
+chip_ids=("h650" "Omni5M" "1M" "CMC1")  
+for chip in "${chip_ids[@]}"
+do
+	# for CHR in {1..22}
+	# do
+	echo Submitting chip ${chip}.. done # and chromosome ${CHR} script... done
+	sbatch --export=CHIP=${chip} /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/postimputation_processing_2.sh
+	sleep 0.5
+	# done
+done
+
+
+#######################################################
+## merge all chips and annotate
+#######################################################
+
+# concatenate files from multiple chips together
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed
+chip_ids=("h650" "Omni5M" "1M" "CMC1")
+rm -f multiple_chromosomes_filenames.txt && for CHIP in "${chip_ids[@]}"; do echo /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/${CHIP}/${CHIP}_genotypes_5 >> multiple_chromosomes_filenames.txt; done
+
+# then use this txt file to merge all datasets
+plink --merge-list multiple_chromosomes_filenames.txt --make-bed --out genotypes_1
+
+# QC
+plink --bfile genotypes_1 --geno 0.2 --maf 0.01 --make-bed --out genotypes_2
+plink --bfile genotypes_2 --mind 0.2 --make-bed --out genotypes_3 #  7056068 variants and 891 people 
+plink --bfile genotypes_3 --geno 0.05 --make-bed --out genotypes_4 # 6323770 variants and 891 people
+plink --bfile genotypes_4 --mind 0.05 --make-bed --out genotypes_5 # 6323770 variants and 891 people
+plink --bfile genotypes_5 --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out genotypes_6a #6252056 variants and 891 people  #  maintaining a maf of 0.01, as otherwise when we subset by ancestry we will have removed variants that have lower ancestry in one population, but that could still be informative for another population
+plink --bfile genotypes_6a --maf 0.01 --hwe 1e-10 include-nonctrl --geno 0.05 --mind 0.05 --make-bed --out genotypes_6b # 6230962 variants and 891 people 
+plink --bfile genotypes_6b --maf 0.01 --hwe 1e-10 include-nonctrl --geno 0.05 --mind 0.05 --make-bed --out genotypes_7
+
+# check individuals for excess heterozigosity (High levels of heterozygosity within an individual might be an indication of low sample quality whereas low levels of heterozygosity may be due to inbreeding.). First, run the --het check in plink. Get pruned SNPs first.
+# get list of pruned SNPs
+plink --bfile genotypes_7 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_7.indepSNP
+plink --bfile genotypes_7 --extract genotypes_7.indepSNP.prune.in --het --out genotypes_7.R_check
+# run this R script that detects outliers - This is a script from  https://github.com/MareesAT/GWA_tutorial/
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "genotypes_7.R_check.het" "genotypes_7.R_check.het.fail"
+# The following code generates a list of individuals who deviate more than 3 standard deviations from the heterozygosity rate mean.
+cat genotypes_7.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> genotypes_7.R_check.het.fail.individuals && head genotypes_7.R_check.het.fail.individuals # no individuals
+
+# if there were any could remove using something like: plink --bfile genotypes_9 --remove genotypes_9.R_check.het.fail.individuals --maf 0.05 --hwe 1e-6 --mind 0.05 --geno 0.05 --make-bed --out genotypes_9_no_heterozyg_1
+
+# Check samples for relatedness (individuals with pihat > 0.2) 
+plink --bfile genotypes_7 --extract genotypes_7.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2
+cat  pihat_min0.2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat.genome && head zoom_pihat.genome # no related individuals 
+
+	# Relabel genotypes_7 to "genotypes_9", for compatibility with next scripts. There is no genotypes_8 :P
+	plink --bfile genotypes_7 --make-bed --out genotypes_9 
+
+	# get new list of pruned SNPs
+	plink --bfile genotypes_9 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_9.indepSNP
+
+	# get population covariates per individual
+	plink --bfile genotypes_9 --extract genotypes_9.indepSNP.prune.in --pca --out genotypes_9
+
+
+# Genotype files (including non-EUR):
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9 (.bim/.bed/.fam)
+# pruned SNPs 
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9.indepSNP.prune.in
+# covariates
+
+
+# Note: before doing sex check, I had 4784448 vars. NowAfter removing individuals who failed sex check, I have 6230962. There must had been some technical errors with those samples!
+
+

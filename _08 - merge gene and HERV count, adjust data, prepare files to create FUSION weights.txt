@@ -1,0 +1,915 @@
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data
+conda activate Renv_final_2
+R
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(data.table)
+setwd("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data")
+
+# load gene counts
+# load(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_590.RData") 
+load(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_998_lengthscaledTPM.RData")  # contains all individuals
+
+    # Create object containing length of genes and HERVs
+        herv_length_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_is_now_hg19.bed", sep="\t", stringsAsFactors=F, h=F)
+        herv_length <- select(herv_length_0, "V4", "V6")
+        colnames(herv_length) <- c("gene", "length")
+
+        gene_length_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/genes_genes_is_now_hg19.bed", sep="\t", stringsAsFactors=F, h=F)
+        gene_length <- dplyr::select(gene_length_0, "V4", "V6")
+        colnames(gene_length) <- c("gene", "length")
+        all_lengths <- rbind(gene_length, herv_length)
+        table(is.na(all_lengths$gene))
+        table(duplicated(all_lengths$gene))
+        table(is.na(all_lengths$length))
+
+## EUR subset, 563 cases and controls, plus 242 controls only
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_242_EUR_controls_only.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_242_EUR_controls_only.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_139_AFR_controls_only.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_139_AFR_controls_only.tsv
+    pd_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv", stringsAsFactors=F, h=T)
+    row.names(pd_0) <- pd_0$RNAseq_name
+    pd <- select(pd_0, "RNAseq_name", "individual.id", "genotype_id", "Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Real_age", "Age_bins", paste0("PC",seq(1,20)) )
+
+    # subset tximport object
+    txi.tx_ss <- lapply(txi.tx, function(x) if(is.matrix(x)) return(x[,row.names(pd)]) else return(x))
+    all.equal(row.names(pd), colnames(txi.tx_ss$counts))
+    length(colnames(txi.tx_ss$counts)) # 563
+
+            # Quickly test to see if there are clear outliers on DESeq2
+            dds <- DESeqDataSetFromTximport(txi.tx_ss, pd, ~1)
+            vsd <- vst(dds, blind=TRUE)
+
+            # pca plot
+            pdf("563_pca_plot_based_on_gene_expression_alone_by_institution.pdf",  width = 12, height = 9)
+            plotPCA(vsd, intgroup="Institution")
+            dev.off()  # There's a separation here due to institutions (which was known previously, and that can be corrected later using SVA), but it doesn't look like there are major outliers. 
+
+            pdf("563_pca_plot_based_on_gene_expression_alone_by_sex.pdf",  width = 12, height = 9)
+            plotPCA(vsd, intgroup="Gender")
+            dev.off()  # Yep, the separation is because of sex.
+
+
+    # Create expression matrix combining herv and gene counts
+    herv_counts <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv",  sep="\t", stringsAsFactors=F, h=T, row.names="X")
+    herv_counts[1:5,1:5]
+
+    # create gene counts object
+    gene_counts <- txi.tx_ss$counts  # counts already corrected for gene length bias.
+    gene_counts[1:5,1:5]
+
+    # the first row label is empty (probably unknown gene ID in tx2gene). just remove it. https://support.bioconductor.org/p/102220/
+    gene_counts <- gene_counts[-1,] 
+    gene_counts[1:5,1:5]
+
+    # match sample names with the herv counts object
+    gene_counts <- gene_counts[,colnames(herv_counts)]
+    all.equal(colnames(gene_counts), colnames(herv_counts))
+
+    # object containing combined expression data (gene-length-normalised count data, and HERV counts)
+    counts_df_0 <- rbind(gene_counts, herv_counts)
+    dim(counts_df_0) #  31971   563
+
+    # subset to have only samples in pd, and in the same order
+    counts_df_0 <- counts_df_0[, pd$RNAseq_name] 
+
+    # identify elements in counts table with length information by merging with object " all_lengths"
+    genes_with_length <- merge(counts_df_0, all_lengths, by.x='row.names', by.y='gene')
+    genes_with_length <- cbind.data.frame(genes_with_length$'Row.names', genes_with_length$length)
+    colnames(genes_with_length) <- c("gene","length")
+
+    counts_df_0 <- counts_df_0[ genes_with_length$gene, ] 
+    dim(counts_df_0) #  31802   563
+    all.equal(row.names(counts_df_0),as.character(genes_with_length$gene))
+
+    # append gene length to count matrix to match names
+    counts_df <- merge(counts_df_0, all_lengths, by.x='row.names', by.y='gene')
+    nrow(counts_df_0) #  31802
+    nrow(counts_df) #  31802
+    nrow(all_lengths) #  33975
+
+    counts_df[1:5,1:5]
+    lengths <- data.frame(cbind(counts_df$Row.names, counts_df$length))
+    row.names(counts_df) <- counts_df$Row.names
+    counts_df$Row.names <- NULL
+    counts_df$length <- NULL
+    counts_df <- data.matrix(counts_df)
+    all.equal(row.names(counts_df), as.character(lengths$X1))
+
+    # select genes where there are less than 20% of samples with raw counts greater than or equal to 6 (as performed by GTEx v8)
+    keep_counts <- rowSums(counts_df_0 >= 6) >= 20/100*ncol(counts_df_0) 
+    #### keep_counts[[which(names(keep_counts)=="A1BG")]]
+    #### keep_counts[[which(names(keep_counts)=="A4GNT")]]
+    #### keep_counts[[which(names(keep_counts)=="ERVLE_8q24.3h")]]
+    counts_df <- counts_df_0[keep_counts==TRUE,]
+    dim(counts_df) #  19660   563
+
+    # check how many HERVs remain
+    keep_df <- data.frame(keep_counts)
+    keep_df$names <- row.names(keep_df)
+    keep_df <- keep_df[rownames(keep_df) %like% "_", ]
+    table(keep_df$keep) # 4594 HERVs
+
+    # make sure that gene names are in the same order as in the counts table. Also, convert to text/numeric, instead of factor
+    lengths$X1 <- as.character(lengths$X1)
+    lengths$X2 <- as.numeric(as.character(lengths$X2))
+    row.names(lengths)<- lengths$X1
+    lengths <- lengths[row.names(counts_df),]
+    all.equal(row.names(counts_df), as.character(lengths$X1))
+
+    # create edgeR object
+    library(edgeR)
+    y <- DGEList(counts=counts_df, genes=row.names(counts_df))
+
+    # calculate library sizes
+    y <- calcNormFactors(y)
+    head(y$samples)
+
+    # Calculate TPM for low expression filtering (as performed in GTEx). To calculate TPMs, I need to include gene lengths in the edgeR object. These gene length values are not taken into consideration by edgeR for calculating TMM values; they are only used for filtering low expression genes based on TPM. (we will do this to keep things consistent with GTEx). Performing this step using DEseq2's internal filtering criteria did not substantially change the outcome of the main analysis. Note: Telescope counts are already calculated per HERV, so in theory there's no need to normalize per length. See discussion here: https://support.bioconductor.org/p/9137371/#:~:text=2)%20i%20don't%20really%20follow%2C%20i%20think%2C%20the%20issue%20with%20gene%20length%20bias%20for%20large%20samples%20is%20solely%20when%20it%20is%20correlated%20with%20the%20condition.%20otherwise%2C%20i%20don't%20think%20there%20is%20a%20big%20concern%20actually.
+    all.equal(row.names(counts_df), as.character(lengths$X1), row.names(y$genes))
+    y$genes$length <- as.numeric(lengths$X2) # from https://www.biostars.org/p/166838/
+
+    # calculate TPM  # from https://www.biostars.org/p/388584/ 
+    RPKM <- rpkm(y)
+    TPM <- t( t(RPKM) / colSums(RPKM) ) * 1e6 #  
+
+    # Remove genes with low expression - GTEx: Genes were selected based on expression thresholds of at least 0.1 TPM in at least 20% of samples and at least 6 reads in at least 20% of samples. 
+    keep_tpm <- rowSums(TPM >= 0.1) >= 20/100*ncol(TPM)  # keep rows with TPM >0.1 in at least 20% of samples 
+    table(keep_tpm)
+    # FALSE  TRUE      # sum equals nrow(y$genes)
+    #    49 19611
+    #### keep_tpm[[which(names(keep_tpm)=="A1BG")]]
+    #### keep_tpm[[which(names(keep_tpm)=="A4GNT")]]
+    #### keep_tpm[[which(names(keep_tpm)=="ERVLE_8q24.3h")]]
+    # check how many HERVs remain
+    keep_tpm_hervs <- data.frame(keep_tpm)
+    keep_tpm_hervs$names <- row.names(keep_tpm_hervs)
+    keep_tpm_hervs <- keep_tpm_hervs[rownames(keep_tpm_hervs) %like% "_", ]
+    table(keep_tpm_hervs$keep_tpm) # 4594 HERVs again.
+
+    # how many genes?
+    # 19611 - 4594 = 15017
+
+    # subset edgeR object # it does not matter if we keep the length estimation here, as edgeR does not perform this normalization for gene length (and this has already been done by tximport) (also, removing it or keeping it, the TMM values are the same). 
+    y <- y[keep_tpm, , keep.lib.sizes=FALSE]
+    dim(y)  # 19611   563
+
+            # # old way to calculate normalized transformed valued
+            # y <- calcNormFactors(y)
+            # # obtain TMM values # see https://www.biostars.org/p/317701/
+            # dge <- calcNormFactors(y, method = "TMM")
+            # tmm <- cpm(dge)
+            # # perform inverse-normal transformation # https://www.biostars.org/p/80597/#285665
+            # int <- qnorm((rank(tmm,na.last="keep")-0.5)/sum(!is.na(tmm))) 
+            # dim(int) <- dim(tmm)
+            # colnames(int) <- colnames(tmm)
+            # row.names(int) <- row.names(tmm)
+
+    # new way, by the edgeR developers:  https://www.biostars.org/p/9488380/
+    tmm <- calcNormFactors(y, method="TMM")
+    logCPM <- cpm(tmm, log=TRUE)
+    n <- ncol(logCPM)
+    zvalues <- qnorm(ppoints(n))
+    int_genes <- logCPM
+    for (i in 1:nrow(int_genes)) int_genes[i,] <- zvalues[order(order(int_genes[i,]))]
+
+            # library sizes plot (size factors)
+            # tiff(file="distribution library sizes.tiff", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+            # par(mar=c(1,1,1,1))
+            # barplot(y$samples$lib.size*1e-6, names=1:nrow(y$samples), main="Library size distribution (per million)")
+            # dev.off()
+
+            # # raw read count distribution plot 
+            # tiff(file="distribution raw read counts.tif", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+            # par(mar=c(1,1,1,1))
+            # boxplot(y$counts, names=1:nrow(y$samples), main="raw read counts", cex = .6)
+            # dev.off()
+
+    # TMM-logCPM normalised values plot
+    tiff(file="563 distribution TMM logCPM.tif", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+    par(mar=c(1,1,1,1))
+    boxplot(logCPM, names=1:ncol(logCPM),  main = "TMM-normalized counts", cex = .6) 
+    dev.off()
+
+    # Inverse normalized transformed values (INT) plot
+    tiff(file="563 distribution INT.tif", width = 10000, height = 8000, units = "px", res=300,  compression = "lzw")
+    par(mar=c(1,1,1,1))
+    boxplot(int_genes, names=1:ncol(int_genes), main="INT-transformed expression", cex = .6)
+    abline(h=median(int_genes),col="blue")
+    dev.off() 
+
+    # PCA plots to show how known factors and covariates correlate with expression PCs
+    dim(pd) # 563 samples, 30 variables
+    str(pd)
+    pd$Institution <- as.factor(as.numeric(as.factor(pd$Institution)))# remove text from factorial variables (needed for pcatools)
+    pd$Profile <- as.factor(as.numeric(as.factor(pd$Profile)))
+    pd$Gender <- as.factor(as.numeric(as.factor(pd$Gender)))
+
+    # prepare final input files for PCAtools
+    metadata <- pd 
+    mat <- int_genes 
+    mat[1:5,1:5]
+    metadata[1:5,1:5] 
+    # subset to make sure samples match
+    metadata <- metadata[ colnames(mat), ]
+    all.equal(colnames(mat), row.names(metadata))
+
+    # Run PCA, and plot correlation matrix with known variables
+    library(PCAtools)
+    p <- pca(mat, metadata = metadata, removeVar = 0.1)
+
+    tiff("563 PCA - eigencorplot 0 BEFORE adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:20))))
+    dev.off()
+
+    # Run pairsplot 
+    tiff("563 PCA - pairsplot 0 BEFORE adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    pairsplot(p, 
+        components = getComponents(p, c(1:10)),
+        triangle = TRUE, trianglelabSize = 12,
+        hline = 0, vline = 0,
+        pointSize = 0.4,
+        gridlines.major = FALSE, gridlines.minor = FALSE,
+        title = 'Pairs plot', plotaxes = FALSE,
+        margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+    dev.off()     # Pairsplot show that first 10 population covariates are already capturing most of the variance in the data.
+
+    # Adjust the data # Calculate surrogate variables, taking into consideration the variables that are important according to PCA (including first 10 population covariates)
+    all.equal(colnames(mat), row.names(metadata))
+    mod1 <- model.matrix(~ Institution + RIN + Profile + Gender + PMI_hrs + Age_bins + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 , data=metadata)
+    # mod0 <- model.matrix(~ Institution, data=metadata) # SVs will not control for Institution, and resulting SVs will correlate with Institution.
+    mod0 <- model.matrix(~ 1, data=metadata) # SVs will find covariates that mostly do not correlate with variables in the full model.
+
+    library(sva)
+    svobj = sva(mat,mod1,mod0,n.sv=60) #60 comes from GTEx: https://www.gtexportal.org/home/documentationPage#:~:text=and%2060%20factors%20for%20n%E2%89%A5350
+    svs <- svobj$sv
+    colnames(svs) <- paste0("SV", c(1:60))
+    metadata_2 <- cbind(metadata, svs)  # pd file containing 60 SVs
+
+        # # check correlation between known covariates and SVs. First, create matrix for correlation analysis
+        # matrix_covars <- select(metadata_2, Institution, RIN, Profile, Gender, PMI_hrs, Age_bins, paste0("PC",c(1:10)), paste0("SV",c(1:60))) 
+        # matrix_covars$Institution <- as.numeric(matrix_covars$Institution)
+        # matrix_covars$Profile <- as.numeric(matrix_covars$Profile)
+        # matrix_covars$Gender <- as.numeric(matrix_covars$Gender)
+
+        # # check if variables are normally distributed (for correlation plot next).
+        # normality <- do.call(rbind, lapply(matrix_covars, function(x) shapiro.test(x)[c("statistic", "p.value")]))
+        # normality # many P < 0.05, meaning that variables are not normally distributed. Therefore, apply Spearman, not Pearson
+
+        # matrix_covars <- as.matrix(matrix_covars)
+        # mydata.cor = cor(matrix_covars, method = c("spearman"))
+        # library(corrplot)
+
+        # tiff(file="Correlation known variables pd metadata and SVs - Institution only in mod0.tif", compression = "lzw", width=80, height=80, res=118, units="cm") 
+        # corrplot(mydata.cor, tl.col="black", tl.cex=1)# , order="hclust") # label color, label size, hierarchical clustering
+        # dev.off()
+
+        # tiff(file="563 Correlation known variables pd metadata and SVs - ~1 in mod0.tif", compression = "lzw", width=80, height=80, res=118, units="cm") 
+        # corrplot(mydata.cor, tl.col="black", tl.cex=1)# , order="hclust") # label color, label size, hierarchical clustering
+        # dev.off() # it shows that there's little correlation between SVs and known variables/genotype PCs
+
+    # Re-run PCA, plotting correlation matrix with known variables + freshly calculated SVs (to show that SVs explain PCs of the expression data!)
+    p <- pca(mat, metadata = metadata_2, removeVar = 0.1)
+    tiff("563 PCA - eigencorplot 1 - including new SVs - before adjusting.tif", width = 3200, height = 4500, units = "px", res=300, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:10)), paste0("SV", c(1:60))))
+    dev.off()
+
+    # print(noquote(paste0("SV", c(1:60), " +")))
+    # SV1 +  SV2 +  SV3 +  SV4 +  SV5 +  SV6 +  SV7 +  SV8 +  SV9 +  SV10 + SV11 + SV12 + SV13 + SV14 + SV15 + SV16 + SV17 + SV18 + SV19 + SV20 + SV21 + SV22 + SV23 + SV24 + SV25 + SV26 + SV27 + SV28 + SV29 + SV30 + SV31 + SV32 + SV33 + SV34 + SV35 + SV36 + SV37 + SV38 + SV39 + SV40 + SV41 + SV42 + SV43 + SV44 + SV45 + SV46 + SV47 + SV48 + SV49 + SV50 + SV51 + SV52 + SV53 + SV54 + SV55 + SV56 + SV57 + SV58 + SV59 + SV60
+
+    # Adjust the data to all known variables, and the calculated SVs 
+    str(metadata_2)
+    adjusting_matrix <- model.matrix(~ Institution + RIN + Profile + Gender + PMI_hrs + Age_bins + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + SV1 +  SV2 +  SV3 +  SV4 +  SV5 +  SV6 +  SV7 +  SV8 +  SV9 +  SV10 + SV11 + SV12 + SV13 + SV14 + SV15 + SV16 + SV17 + SV18 + SV19 + SV20 + SV21 + SV22 + SV23 + SV24 + SV25 + SV26 + SV27 + SV28 + SV29 + SV30 + SV31 + SV32 + SV33 + SV34 + SV35 + SV36 + SV37 + SV38 + SV39 + SV40 + SV41 + SV42 + SV43 + SV44 + SV45 + SV46 + SV47 + SV48 + SV49 + SV50 + SV51 + SV52 + SV53 + SV54 + SV55 + SV56 + SV57 + SV58 + SV59 + SV60, data=metadata_2)
+    mat_adjusted <- limma::removeBatchEffect(mat, covariates = adjusting_matrix[,-1]) # removing effects from all confounders after the intercept
+
+    # Re-do PCA
+    p <- pca(mat_adjusted, metadata = metadata_2, removeVar = 0.1)
+    tiff("563 PCA - eigencorplot 2 - including new SVs - after adjusting for SVs and known variables.tif", width = 3200, height = 4500, units = "px", res=300, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:10)), paste0("SV", c(1:60))))
+    dev.off()
+
+    # re-do pairsplot
+    tiff("563 PCA - pairsplot 1 AFTER adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    pairsplot(p, 
+        components = getComponents(p, c(1:10)),
+        triangle = TRUE, trianglelabSize = 12,
+        hline = 0, vline = 0,
+        pointSize = 0.4,
+        gridlines.major = FALSE, gridlines.minor = FALSE,
+        title = 'Pairs plot', plotaxes = FALSE,
+        margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+    dev.off()
+
+
+    #####################################################
+    # Also check for outliers using WGCNA's clustering method.
+    library(WGCNA);
+    options(stringsAsFactors = FALSE);
+    enableWGCNAThreads() # only out of Rstudio, it detects the number of cores available  
+
+    # Data needs transposing for WGCNA
+    datExpr0  <- as.data.frame(t(mat_adjusted))
+    datExpr0[1:5,1:5]
+    dim(datExpr0) #   563 19611
+    # check if there are gene outliers
+    gsg = goodSamplesGenes(datExpr0, verbose = 3); 
+    gsg$allOK # TRUE = No outliers 
+
+    # cluster samples to see if there are obvious sample outliers after correcting for confounders
+    sampleTree = hclust(dist(datExpr0), method = "average");
+    # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+    pdf(file = "563_sampleClustering_check.pdf", width = 36, height = 27);
+    sizeGrWindow(36,27)
+    par(cex = 0.6);
+    par(mar = c(0,4,2,0))
+    plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 0.5,
+    cex.axis = 1.5, cex.main = 2)
+    dev.off()     # No obvious outliers. All good to go for TWAS!
+
+    # Create coordinates file for Ollie's weight creation process: see https://github.com/opain/Calculating-FUSION-TWAS-weights-pipeline/blob/master/Example_coordinate_file.txt. You can use the lifted annotation files read previously to calculate gene lengths
+    combined <- rbind(gene_length_0, herv_length_0)
+
+    # subset coordinates file to show only genes included in the analysis 
+    row.names(combined)= combined$V4
+    dim(combined) # 33975     6
+    combined <- combined[row.names(mat_adjusted),]
+    dim(combined) # 19611     6
+
+    # sort by chr and start position
+    combined <- combined[with(combined, order(V1, V2)), ]
+    combined$V5 <- NULL
+    combined$V6 <- NULL
+   
+    # find out how many HERVs.
+    combined_hervs_all <- combined[rownames(combined) %like% "_", ]
+    nrow (combined_hervs_all) #  4594
+
+    # how many are genes.
+    combined_genes_all <- combined[!rownames(combined) %like% "_", ]
+    nrow ( combined_genes_all) # 15017
+
+      # write.table(combined_hervs_all$V4, "~/hervs_expressed_all_EUR", col.names=F, row.names=F, quote=F)
+      # write.table(combined_genes_all$V4, "~/genes_expressed_all_EUR", col.names=F, row.names=F, quote=F)
+
+ # keep only Chr 1-22 (there's no genetic data on other chromosomes)
+    mainChr <- c(as.character(1:22))
+    table(combined$V1) 
+    dim(combined) #  19611
+
+        # Find out how many have cis-heritable expression 
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep '_' | wc -l ")  #wc -l # 1238
+
+        # and their names
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep '_' > ~/cis_heritable_HERVs_EUR ")  
+      
+
+        # What about expressed refseq genes after filtering
+        
+    
+    # How many genes # 19611 - 4289 = 15322
+    # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep -v  '_' | wc -l ")  #wc -l # 6956
+    # and their names
+    # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep -v  '_' > ~/cis_heritable_genes_EUR ")
+
+    combined <- combined[combined$V1 %in% mainChr,]
+    dim(combined) # 18748   4 # genes and hervs in autosomes, which are expressed in 563 EUR individuals (cases and controls)
+    table(combined$V1) 
+
+  # find out how many HERVs.
+    combined_hervs_autossomes <- combined[rownames(combined) %like% "_", ]
+    nrow (combined_hervs_autossomes) #  4289
+
+    # how many are genes.
+    combined_genes_autossomes <- combined[!rownames(combined) %like% "_", ]
+    nrow ( combined_genes_autossomes) # 14459 
+        
+        # write.table(combined_hervs_autossomes$ID, "~/hervs_expressed_autosomes_EUR", col.names=F, row.names=F, quote=F)
+        # write.table(combined_genes_autossomes$ID, "~/genes_expressed_autosomes_EUR", col.names=F, row.names=F, quote=F)
+
+    names(combined) <- c("X.Chr","start","end","ID")
+    system("mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all")
+    write.table(combined, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/coordinates_file_genes_and_hervs_hg19.txt", sep=" ", quote=FALSE, row.names=F, col.names=T)
+
+    # Now, create phenotype file for the weight creation pipeline ( https://github.com/opain/Calculating-FUSION-TWAS-weights-pipeline/blob/master/Example_phenotype_file.txt )
+    mat_adjusted_plink_1 <- mat_adjusted
+    mat_adjusted_plink_1[1:5,1:5]
+    # rename col names with genotype ids, not RNA-seq ids
+    mat_adjusted_plink_1 <- t(mat_adjusted_plink_1)
+    pd_ids <- dplyr::select(metadata_2, "genotype_id")
+    mat_adjusted_plink_2 <- merge(pd_ids, mat_adjusted_plink_1, by.x="row.names", by.y="row.names")
+    mat_adjusted_plink_2[1:5,1:5]
+    dim(mat_adjusted_plink_2)
+    # add genotype id, remove RNA-seq id
+    row.names(mat_adjusted_plink_2) <- mat_adjusted_plink_2$genotype_id 
+    mat_adjusted_plink_2$Row.names <- NULL
+    mat_adjusted_plink_2$genotype_id <- NULL
+    mat_adjusted_plink_2[1:5,1:5] 
+    # order colnames according to coordinates file (object is called "combined"), where genes are row names 
+    mat_adjusted_plink_2 <- mat_adjusted_plink_2[ , combined$ID ]
+    all.equal(colnames(mat_adjusted_plink_2), combined$ID)
+
+    # # convert to matrix (it helps you make sure that cols and rows are what you think they are) # not needed.
+    # mat_adjusted_plink_2 <- as.matrix(mat_adjusted_plink_2)
+    dim(combined)# 18748     4
+    dim(mat_adjusted_plink_2) # 563 18748
+
+    plink_names <- data.frame(row.names(mat_adjusted_plink_2))
+    plink_names$FID <- "0"
+    colnames(plink_names)[1] <- "IID"
+    mat_adjusted_plink_3 <- cbind(data.frame(plink_names$FID), data.frame(plink_names$IID), data.frame(mat_adjusted_plink_2))
+    names(mat_adjusted_plink_3)[1] <- "FID"
+    names(mat_adjusted_plink_3)[2] <- "IID"
+    mat_adjusted_plink_3[1:5,1:5]
+    write.table(mat_adjusted_plink_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/phenotype_file_adjusted_genes_and_hervs_hg19_EUR_all.txt", sep=" ", quote=FALSE, row.names=F, col.names=TRUE)
+
+    # Now extract only data from EUR controls
+    EUR_controls_IDs <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs", stringsAsFactors=F, h=F)
+    mat_adjusted_plink_3_EUR_controls <- merge(mat_adjusted_plink_3, EUR_controls_IDs, by.x="IID", by.y="V1")
+    # dim(mat_adjusted_plink_3_EUR_controls) # [1]   242 18750 
+    # dim(mat_adjusted_plink_3)              # [1]   563 18750 # perfect
+    table(is.na(    mat_adjusted_plink_3_EUR_controls))
+
+    system("mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_242_EUR_controls_only")
+    write.table(mat_adjusted_plink_3_EUR_controls, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_242_EUR_controls_only/phenotype_file_adjusted_genes_and_hervs_hg19_EUR_controls_only.txt", sep=" ", quote=FALSE, row.names=F, col.names=TRUE)
+
+    # Note that since there is no filtering for this subcohort alone (there are no strong differences between cases and controls in previous analyses), the number of genes remains the same, and thus the gene coordinates file can be the same as for the entire EUR cohort. To make things more consistent, let's copy that file into this directory
+    system("cp /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/coordinates_file_genes_and_hervs_hg19.txt /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_242_EUR_controls_only/coordinates_file_genes_and_hervs_hg19.txt")
+
+    save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_EUR_563_242.RDat") # will need later for WGCNA
+    quit("no")
+    # To process the AFR subset, let's create a different session so we can use the same object names and just retrieve the R session if needed (for co-expression network analysis using WGCNA, for example)
+
+## AFR subset, 229 cases and controls and 139 controls only. Not sure the controls only analysis will be powerful enough, since it's severely underpowered. Let's try it anyway.
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_242_EUR_controls_only.tsv
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_242_EUR_controls_only.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_139_AFR_controls_only.tsv
+# -> /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_139_AFR_controls_only.tsv
+    
+conda activate Renv_final_2
+R
+library(dplyr)
+library(DESeq2)
+library(edgeR)
+library(data.table)
+setwd("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data")
+
+# load gene counts
+# load(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_590.RData") 
+load(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_998_lengthscaledTPM.RData")  # contains all individuals
+
+    # Create object containing length of genes and HERVs
+        herv_length_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_is_now_hg19.bed", sep="\t", stringsAsFactors=F, h=F)
+        herv_length <- select(herv_length_0, "V4", "V6")
+        colnames(herv_length) <- c("gene", "length")
+
+        gene_length_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/genes_genes_is_now_hg19.bed", sep="\t", stringsAsFactors=F, h=F)
+        gene_length <- dplyr::select(gene_length_0, "V4", "V6")
+        colnames(gene_length) <- c("gene", "length")
+        all_lengths <- rbind(gene_length, herv_length)
+        table(is.na(all_lengths$gene))
+        table(duplicated(all_lengths$gene))
+        table(is.na(all_lengths$length))
+
+    pd_0 <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv", stringsAsFactors=F, h=T)
+    row.names(pd_0) <- pd_0$RNAseq_name
+    pd <- select(pd_0, "RNAseq_name", "individual.id", "genotype_id", "Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Real_age", "Age_bins", paste0("PC",seq(1,20)) )
+
+    # subset tximport object
+    txi.tx_ss <- lapply(txi.tx, function(x) if(is.matrix(x)) return(x[,row.names(pd)]) else return(x))
+    all.equal(row.names(pd), colnames(txi.tx_ss$counts))
+    length(colnames(txi.tx_ss$counts)) # 229
+
+            # Quickly test to see if there are clear outliers on DESeq2
+            dds <- DESeqDataSetFromTximport(txi.tx_ss, pd, ~1)
+            vsd <- vst(dds, blind=TRUE)
+
+            # pca plot
+            pdf("229_pca_plot_based_on_gene_expression_alone_by_institution_afr.pdf",  width = 12, height = 9)
+            plotPCA(vsd, intgroup="Institution")
+            dev.off()  # There's a separation here due to institutions, but seems like there's another clear factor explaining expression differences.
+
+            pdf("229_pca_plot_based_on_gene_expression_alone_by_sex_afr.pdf",  width = 12, height = 9)
+            plotPCA(vsd, intgroup="Gender")
+            dev.off()  # Yep, the separation is because of sex. Not a problem, we are going to correct for these later.
+
+
+    # Create expression matrix combining herv and gene counts
+    herv_counts <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv",  sep="\t", stringsAsFactors=F, h=T, row.names="X")
+    herv_counts[1:5,1:5]
+
+    # create gene counts object
+    gene_counts <- txi.tx_ss$counts  # counts already corrected for gene length bias.
+    gene_counts[1:5,1:5]
+
+    # the first row label is empty (probably unknown gene ID in tx2gene). just remove it. https://support.bioconductor.org/p/102220/
+    gene_counts <- gene_counts[-1,] 
+    gene_counts[1:5,1:5]
+
+    # match sample names with the herv counts object
+    gene_counts <- gene_counts[,colnames(herv_counts)]
+    all.equal(colnames(gene_counts), colnames(herv_counts))
+
+    # object containing combined expression data (gene-length-normalised count data, and HERV counts)
+    counts_df_0 <- rbind(gene_counts, herv_counts)
+    dim(counts_df_0) #  31971   229
+
+    # subset to have only samples in pd, and in the same order
+    counts_df_0 <- counts_df_0[, pd$RNAseq_name] 
+
+    # identify elements in counts table with length information by merging with object " all_lengths"
+    genes_with_length <- merge(counts_df_0, all_lengths, by.x='row.names', by.y='gene')
+    genes_with_length <- cbind.data.frame(genes_with_length$'Row.names', genes_with_length$length)
+    colnames(genes_with_length) <- c("gene","length")
+
+    counts_df_0 <- counts_df_0[ genes_with_length$gene, ] 
+    dim(counts_df_0) #  31802   229
+    all.equal(row.names(counts_df_0),as.character(genes_with_length$gene))
+
+    # append gene length to count matrix to match names
+    counts_df <- merge(counts_df_0, all_lengths, by.x='row.names', by.y='gene')
+    nrow(counts_df_0) #  31802
+    nrow(counts_df) #  31802
+    nrow(all_lengths) #  33975
+
+    counts_df[1:5,1:5]
+    lengths <- data.frame(cbind(counts_df$Row.names, counts_df$length))
+    row.names(counts_df) <- counts_df$Row.names
+    counts_df$Row.names <- NULL
+    counts_df$length <- NULL
+    counts_df <- data.matrix(counts_df)
+    all.equal(row.names(counts_df), as.character(lengths$X1))
+
+    # select genes where there are less than 20% of samples with raw counts greater than or equal to 6 (as performed by GTEx v8)
+    keep_counts <- rowSums(counts_df_0 >= 6) >= 20/100*ncol(counts_df_0) 
+    #### keep_counts[[which(names(keep_counts)=="A1BG")]]
+    #### keep_counts[[which(names(keep_counts)=="A4GNT")]]
+    #### keep_counts[[which(names(keep_counts)=="ERVLE_8q24.3h")]]
+    counts_df <- counts_df_0[keep_counts==TRUE,]
+    dim(counts_df) #  19822   229
+
+    # check how many HERVs remain
+    keep_df <- data.frame(keep_counts)
+    keep_df$names <- row.names(keep_df)
+    keep_df <- keep_df[rownames(keep_df) %like% "_", ]
+    table(keep_df$keep) # 4645 HERVs
+
+    # make sure that gene names are in the same order as in the counts table. Also, convert to text/numeric, instead of factor
+    lengths$X1 <- as.character(lengths$X1)
+    lengths$X2 <- as.numeric(as.character(lengths$X2))
+    row.names(lengths)<- lengths$X1
+    lengths <- lengths[row.names(counts_df),]
+    all.equal(row.names(counts_df), as.character(lengths$X1))
+
+    # create edgeR object
+    library(edgeR)
+    y <- DGEList(counts=counts_df, genes=row.names(counts_df))
+
+    # calculate library sizes
+    y <- calcNormFactors(y)
+    head(y$samples)
+
+    # Calculate TPM for low expression filtering (as performed in GTEx). To calculate TPMs, I need to include gene lengths in the edgeR object. These gene length values are not taken into consideration by edgeR for calculating TMM values; they are only used for filtering low expression genes based on TPM. (we will do this to keep things consistent with GTEx). Performing this step using DEseq2's internal filtering criteria did not substantially change the outcome of the main analysis. Note: Telescope counts are already calculated per HERV, so in theory there's no need to normalize per length. See discussion here: https://support.bioconductor.org/p/9137371/#:~:text=2)%20i%20don't%20really%20follow%2C%20i%20think%2C%20the%20issue%20with%20gene%20length%20bias%20for%20large%20samples%20is%20solely%20when%20it%20is%20correlated%20with%20the%20condition.%20otherwise%2C%20i%20don't%20think%20there%20is%20a%20big%20concern%20actually.
+    all.equal(row.names(counts_df), as.character(lengths$X1), row.names(y$genes))
+    y$genes$length <- as.numeric(lengths$X2) # from https://www.biostars.org/p/166838/
+
+    # calculate TPM  # from https://www.biostars.org/p/388584/ 
+    RPKM <- rpkm(y)
+    TPM <- t( t(RPKM) / colSums(RPKM) ) * 1e6 #  
+
+    # Remove genes with low expression - GTEx: Genes were selected based on expression thresholds of at least 0.1 TPM in at least 20% of samples and at least 6 reads in at least 20% of samples. 
+    keep_tpm <- rowSums(TPM >= 0.1) >= 20/100*ncol(TPM)  # keep rows with TPM >0.1 in at least 20% of samples 
+    table(keep_tpm)
+    # FALSE  TRUE      # sum equals nrow(y$genes)
+    #    72 19750
+    #### keep_tpm[[which(names(keep_tpm)=="A1BG")]]
+    #### keep_tpm[[which(names(keep_tpm)=="A4GNT")]]
+    #### keep_tpm[[which(names(keep_tpm)=="ERVLE_8q24.3h")]]
+    # check how many HERVs remain
+    keep_tpm_hervs <- data.frame(keep_tpm)
+    keep_tpm_hervs$names <- row.names(keep_tpm_hervs)
+    keep_tpm_hervs <- keep_tpm_hervs[rownames(keep_tpm_hervs) %like% "_", ]
+    table(keep_tpm_hervs$keep_tpm) # 4645 HERVs again.
+
+    # subset edgeR object # it does not matter if we keep the length estimation here, as edgeR does not perform this normalization for gene length (and this has already been done by tximport) (also, removing it or keeping it, the TMM values are the same). 
+    y <- y[keep_tpm, , keep.lib.sizes=FALSE]
+    dim(y)  # 19750   229
+
+            # # old way to calculate normalized transformed valued
+            # y <- calcNormFactors(y)
+            # # obtain TMM values # see https://www.biostars.org/p/317701/
+            # dge <- calcNormFactors(y, method = "TMM")
+            # tmm <- cpm(dge)
+            # # perform inverse-normal transformation # https://www.biostars.org/p/80597/#285665
+            # int <- qnorm((rank(tmm,na.last="keep")-0.5)/sum(!is.na(tmm))) 
+            # dim(int) <- dim(tmm)
+            # colnames(int) <- colnames(tmm)
+            # row.names(int) <- row.names(tmm)
+
+    # new way, by the edgeR developers:  https://www.biostars.org/p/9488380/
+    tmm <- calcNormFactors(y, method="TMM")
+    logCPM <- cpm(tmm, log=TRUE)
+    n <- ncol(logCPM)
+    zvalues <- qnorm(ppoints(n))
+    int_genes <- logCPM
+    for (i in 1:nrow(int_genes)) int_genes[i,] <- zvalues[order(order(int_genes[i,]))]
+
+            # # library sizes plot (size factors)
+            # tiff(file="distribution library sizes.tiff", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+            # par(mar=c(1,1,1,1))
+            # barplot(y$samples$lib.size*1e-6, names=1:nrow(y$samples), main="Library size distribution (per million)")
+            # dev.off()
+
+            # # raw read count distribution plot 
+            # tiff(file="distribution raw read counts.tif", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+            # par(mar=c(1,1,1,1))
+            # boxplot(y$counts, names=1:nrow(y$samples), main="raw read counts", cex = .6)
+            # dev.off()
+
+    # TMM-logCPM normalised values plot
+    tiff(file="229 distribution TMM logCPM.tif", width = 5000, height = 4000, units = "px", res=300,  compression = "lzw")
+    par(mar=c(1,1,1,1))
+    boxplot(logCPM, names=1:ncol(logCPM),  main = "TMM-normalized counts", cex = .6) 
+    dev.off()
+
+    # Inverse normalized transformed values (INT) plot
+    tiff(file="229 distribution INT.tif", width = 10000, height = 8000, units = "px", res=300,  compression = "lzw")
+    par(mar=c(1,1,1,1))
+    boxplot(int_genes, names=1:ncol(int_genes), main="INT-transformed expression", cex = .6)
+    abline(h=median(int_genes),col="blue")
+    dev.off() 
+
+    # PCA plots to show how known factors and covariates correlate with expression PCs
+    dim(pd) # 229 samples, 30 variables
+    str(pd)
+    pd$Institution <- as.factor(as.numeric(as.factor(pd$Institution)))# remove text from factorial variables (needed for pcatools)
+    pd$Profile <- as.factor(as.numeric(as.factor(pd$Profile)))
+    pd$Gender <- as.factor(as.numeric(as.factor(pd$Gender)))
+
+    # prepare final input files for PCAtools
+    metadata <- pd 
+    mat <- int_genes 
+    mat[1:5,1:5]
+    metadata[1:5,1:5] 
+    # subset to make sure samples match
+    metadata <- metadata[ colnames(mat), ]
+    all.equal(colnames(mat), row.names(metadata))
+
+    # Run PCA, and plot correlation matrix with known variables
+    library(PCAtools)
+    p <- pca(mat, metadata = metadata, removeVar = 0.1)
+
+    tiff("229 PCA - eigencorplot 0 BEFORE adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:20))))
+    dev.off()
+
+    # Run pairsplot 
+    tiff("229 PCA - pairsplot 0 BEFORE adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    pairsplot(p, 
+        components = getComponents(p, c(1:10)),
+        triangle = TRUE, trianglelabSize = 12,
+        hline = 0, vline = 0,
+        pointSize = 0.4,
+        gridlines.major = FALSE, gridlines.minor = FALSE,
+        title = 'Pairs plot', plotaxes = FALSE,
+        margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+    dev.off()     # Pairsplot show that first 10 population covariates are already capturing most of the variance in the data.
+
+    # Adjust the data # Calculate surrogate variables, taking into consideration the variables that are important according to PCA (including first 10 population covariates)
+    all.equal(colnames(mat), row.names(metadata))
+    mod1 <- model.matrix(~ Institution + RIN + Profile + Gender + PMI_hrs + Age_bins + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 , data=metadata)
+    # mod0 <- model.matrix(~ Institution, data=metadata) # SVs will not control for Institution, and resulting SVs will correlate with Institution.
+    mod0 <- model.matrix(~ 1, data=metadata) # SVs will find covariates that mostly do not correlate with variables in the full model.
+
+    library(sva)
+    svobj = sva(mat,mod1,mod0,n.sv=30) #30 comes from GTEx: https://www.gtexportal.org/home/methods#:~:text=%2C%2030%20factors%20for%20150%E2%89%A4%20N%3C250%2C
+    svs <- svobj$sv
+    colnames(svs) <- paste0("SV", c(1:30))
+    metadata_2 <- cbind(metadata, svs)  # pd file containing 30 SVs
+
+        # # check correlation between known covariates and SVs. First, create matrix for correlation analysis
+        # matrix_covars <- select(metadata_2, Institution, RIN, Profile, Gender, PMI_hrs, Age_bins, paste0("PC",c(1:10)), paste0("SV",c(1:60))) 
+        # matrix_covars$Institution <- as.numeric(matrix_covars$Institution)
+        # matrix_covars$Profile <- as.numeric(matrix_covars$Profile)
+        # matrix_covars$Gender <- as.numeric(matrix_covars$Gender)
+
+        # # check if variables are normally distributed (for correlation plot next).
+        # normality <- do.call(rbind, lapply(matrix_covars, function(x) shapiro.test(x)[c("statistic", "p.value")]))
+        # normality # many P < 0.05, meaning that variables are not normally distributed. Therefore, apply Spearman, not Pearson
+
+        # matrix_covars <- as.matrix(matrix_covars)
+        # mydata.cor = cor(matrix_covars, method = c("spearman"))
+        # library(corrplot)
+
+        # tiff(file="Correlation known variables pd metadata and SVs - Institution only in mod0.tif", compression = "lzw", width=80, height=80, res=118, units="cm") 
+        # corrplot(mydata.cor, tl.col="black", tl.cex=1)# , order="hclust") # label color, label size, hierarchical clustering
+        # dev.off()
+
+        # tiff(file="229 Correlation known variables pd metadata and SVs - ~1 in mod0.tif", compression = "lzw", width=80, height=80, res=118, units="cm") 
+        # corrplot(mydata.cor, tl.col="black", tl.cex=1)# , order="hclust") # label color, label size, hierarchical clustering
+        # dev.off() # it shows that there's little correlation between SVs and known variables/genotype PCs
+
+    # Re-run PCA, plotting correlation matrix with known variables + freshly calculated SVs (to show that SVs explain PCs of the expression data!)
+    p <- pca(mat, metadata = metadata_2, removeVar = 0.1)
+    tiff("229 PCA - eigencorplot 1 - including new SVs - before adjusting.tif", width = 3200, height = 4500, units = "px", res=300, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:10)), paste0("SV", c(1:30))))
+    dev.off()
+
+    # print(noquote(paste0("SV", c(1:60), " +")))
+    # SV1 +  SV2 +  SV3 +  SV4 +  SV5 +  SV6 +  SV7 +  SV8 +  SV9 +  SV10 + SV11 + SV12 + SV13 + SV14 + SV15 + SV16 + SV17 + SV18 + SV19 + SV20 + SV21 + SV22 + SV23 + SV24 + SV25 + SV26 + SV27 + SV28 + SV29 + SV30 + SV31 + SV32 + SV33 + SV34 + SV35 + SV36 + SV37 + SV38 + SV39 + SV40 + SV41 + SV42 + SV43 + SV44 + SV45 + SV46 + SV47 + SV48 + SV49 + SV50 + SV51 + SV52 + SV53 + SV54 + SV55 + SV56 + SV57 + SV58 + SV59 + SV60
+
+    # Adjust the data to all known variables, and the calculated SVs 
+    str(metadata_2)
+    adjusting_matrix <- model.matrix(~ Institution + RIN + Profile + Gender + PMI_hrs + Age_bins + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + SV1 +  SV2 +  SV3 +  SV4 +  SV5 +  SV6 +  SV7 +  SV8 +  SV9 +  SV10 + SV11 + SV12 + SV13 + SV14 + SV15 + SV16 + SV17 + SV18 + SV19 + SV20 + SV21 + SV22 + SV23 + SV24 + SV25 + SV26 + SV27 + SV28 + SV29 + SV30 , data=metadata_2) # + SV31 + SV32 + SV33 + SV34 + SV35 + SV36 + SV37 + SV38 + SV39 + SV40 + SV41 + SV42 + SV43 + SV44 + SV45 + SV46 + SV47 + SV48 + SV49 + SV50 + SV51 + SV52 + SV53 + SV54 + SV55 + SV56 + SV57 + SV58 + SV59 + SV60
+    mat_adjusted <- limma::removeBatchEffect(mat, covariates = adjusting_matrix[,-1]) # removing effects from all confounders after the intercept
+
+    # Re-do PCA
+    p <- pca(mat_adjusted, metadata = metadata_2, removeVar = 0.1)
+    tiff("229 PCA - eigencorplot 2 - including new SVs - after adjusting for SVs and known variables.tif", width = 3200, height = 4500, units = "px", res=300, compression = "lzw")
+    eigencorplot(p, metavars=c("Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", paste0("PC", c(1:10)), paste0("SV", c(1:30))))
+    dev.off()
+
+    # re-do pairsplot
+    tiff("229 PCA - pairsplot 1 AFTER adjusting.tif", width = 3200, height = 2400, units = "px", res=300, pointsize = 12, compression = "lzw")
+    pairsplot(p, 
+        components = getComponents(p, c(1:10)),
+        triangle = TRUE, trianglelabSize = 12,
+        hline = 0, vline = 0,
+        pointSize = 0.4,
+        gridlines.major = FALSE, gridlines.minor = FALSE,
+        title = 'Pairs plot', plotaxes = FALSE,
+        margingaps = unit(c(-0.01, -0.01, -0.01, -0.01), 'cm'))
+    dev.off()
+
+
+    #####################################################
+    # Also check for outliers using WGCNA's clustering method.
+    library(WGCNA);
+    options(stringsAsFactors = FALSE);
+    enableWGCNAThreads() # only out of Rstudio, it detects the number of cores available  
+
+    # Data needs transposing for WGCNA
+    datExpr0  <- as.data.frame(t(mat_adjusted))
+    datExpr0[1:5,1:5]
+    dim(datExpr0) #   229 19750
+    # check if there are gene outliers
+    gsg = goodSamplesGenes(datExpr0, verbose = 3); 
+    gsg$allOK # TRUE = No outliers 
+
+    # cluster samples to see if there are obvious sample outliers after correcting for confounders
+    sampleTree = hclust(dist(datExpr0), method = "average");
+    # Plot the sample tree: Open a graphic output window of size 12 by 9 inches
+    pdf(file = "229_sampleClustering_check.pdf", width = 36, height = 27);
+    sizeGrWindow(36,27)
+    par(cex = 0.6);
+    par(mar = c(0,4,2,0))
+    plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 0.5,
+    cex.axis = 1.5, cex.main = 2)
+    dev.off()     # No obvious outliers. All good to go for TWAS!
+
+    # Create coordinates file for Ollie's weight creation process: see https://github.com/opain/Calculating-FUSION-TWAS-weights-pipeline/blob/master/Example_coordinate_file.txt. You can use the lifted annotation files read previously to calculate gene lengths
+    combined <- rbind(gene_length_0, herv_length_0)
+
+    # subset coordinates file to show only genes included in the analysis 
+    row.names(combined)= combined$V4
+    dim(combined) # 33975     6
+    combined <- combined[row.names(mat_adjusted),]
+    dim(combined) # 19750     6
+
+    # sort by chr and start position
+    combined <- combined[with(combined, order(V1, V2)), ]
+    combined$V5 <- NULL
+    combined$V6 <- NULL
+
+    # find out how many HERVs.
+    combined_hervs_all <- combined[rownames(combined) %like% "_", ]
+    nrow (combined_hervs_all) #  4645
+
+    # how many are genes.
+    combined_genes_all <- combined[!rownames(combined) %like% "_", ]
+    nrow ( combined_genes_all) # 15015
+
+      # write.table(combined_hervs_all$V4, "~/hervs_expressed_all_AFR", col.names=F, row.names=F, quote=F)
+      # write.table(combined_genes_all$V4, "~/genes_expressed_all_AFR", col.names=F, row.names=F, quote=F)
+
+
+
+    # keep only Chr 1-22 (there's no genetic data on other chromosomes)
+    mainChr <- c(as.character(1:22))
+    table(combined$V1) 
+    dim(combined) #  19750
+
+   # Find out how many have cis-heritable expression 
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep '_' | wc -l ")  # 852
+
+        # and their names
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep '_' > ~/cis_heritable_HERVs_AFR ")  
+      
+
+        # What about expressed refseq genes after filtering
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep -v  '_' | wc -l ")  # 5464
+
+        # and their names 
+        # system("ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat | sed 's|/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/||g' | sed 's|.wgt.RDat||g' | grep -v  '_' > ~/cis_heritable_genes_AFR ")
+
+
+
+    combined <- combined[combined$V1 %in% mainChr,]
+    dim(combined) # 18889     4 # genes and hervs in autosomes, which are expressed in 229 AFR individuals (cases and controls)
+    table(combined$V1) 
+
+   # find out how many HERVs.
+    combined_hervs_autossomes <- combined[rownames(combined) %like% "_", ]
+    nrow (combined_hervs_autossomes) #  4343
+
+    # how many are genes.
+    combined_genes_autossomes <- combined[!rownames(combined) %like% "_", ]
+    nrow ( combined_genes_autossomes) # 14456
+    
+     # write.table(combined_hervs_autossomes$V4, "~/hervs_expressed_autosomes_AFR", col.names=F, row.names=F, quote=F)
+     # write.table(combined_genes_autossomes$V4, "~/genes_expressed_autosomes_AFR", col.names=F, row.names=F, quote=F)
+
+    names(combined) <- c("X.Chr","start","end","ID")
+    system("mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all")
+    write.table(combined, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/coordinates_file_genes_and_hervs_hg19.txt", sep=" ", quote=FALSE, row.names=F, col.names=T)
+
+    # Now, create phenotype file for the weight creation pipeline ( https://github.com/opain/Calculating-FUSION-TWAS-weights-pipeline/blob/master/Example_phenotype_file.txt )
+    mat_adjusted_plink_1 <- mat_adjusted
+    mat_adjusted_plink_1[1:5,1:5]
+    # rename col names with genotype ids, not RNA-seq ids
+    mat_adjusted_plink_1 <- t(mat_adjusted_plink_1)
+    pd_ids <- dplyr::select(metadata_2, "genotype_id")
+    mat_adjusted_plink_2 <- merge(pd_ids, mat_adjusted_plink_1, by.x="row.names", by.y="row.names")
+    mat_adjusted_plink_2[1:5,1:5]
+    dim(mat_adjusted_plink_2)
+    # add genotype id, remove RNA-seq id
+    row.names(mat_adjusted_plink_2) <- mat_adjusted_plink_2$genotype_id 
+    mat_adjusted_plink_2$Row.names <- NULL
+    mat_adjusted_plink_2$genotype_id <- NULL
+    mat_adjusted_plink_2[1:5,1:5] 
+    # order colnames according to coordinates file (object is called "combined"), where genes are row names 
+    mat_adjusted_plink_2 <- mat_adjusted_plink_2[ , combined$ID ]
+    all.equal(colnames(mat_adjusted_plink_2), combined$ID)
+
+    # # convert to matrix (it helps you make sure that cols and rows are what you think they are) # not needed.
+    # mat_adjusted_plink_2 <- as.matrix(mat_adjusted_plink_2)
+    dim(combined)# 18889      4
+    dim(mat_adjusted_plink_2) # 229 18889
+
+    plink_names <- data.frame(row.names(mat_adjusted_plink_2))
+    plink_names$FID <- "0"
+    colnames(plink_names)[1] <- "IID"
+    mat_adjusted_plink_3 <- cbind(data.frame(plink_names$FID), data.frame(plink_names$IID), data.frame(mat_adjusted_plink_2))
+    names(mat_adjusted_plink_3)[1] <- "FID"
+    names(mat_adjusted_plink_3)[2] <- "IID"
+    mat_adjusted_plink_3[1:5,1:5]
+    write.table(mat_adjusted_plink_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/phenotype_file_adjusted_genes_and_hervs_hg19_AFR_all.txt", sep=" ", quote=FALSE, row.names=F, col.names=TRUE)
+
+    # Now extract only data from AFR controls, 139
+    AFR_controls_IDs <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs", stringsAsFactors=F, h=F)
+    dim(AFR_controls_IDs) # 139.
+    mat_adjusted_plink_3_AFR_controls <- merge(mat_adjusted_plink_3, AFR_controls_IDs, by.x="IID", by.y="V1")
+    dim(mat_adjusted_plink_3_AFR_controls) # [1]    139 18891
+    dim(mat_adjusted_plink_3)              # [1]    229 18891 # perfect
+    table(is.na(    mat_adjusted_plink_3_AFR_controls))
+
+    system("mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_139_AFR_controls_only")
+    write.table(mat_adjusted_plink_3_AFR_controls, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_139_AFR_controls_only/phenotype_file_adjusted_genes_and_hervs_hg19_AFR_controls_only.txt", sep=" ", quote=FALSE, row.names=F, col.names=TRUE)
+
+    # Note that since there is no filtering for this cohort alone, the number of genes is the same, and thus the gene coordinates file can be the same as for the entire AFR cohort. To make things more consistent, let's copy that file into this directory
+    system("cp /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/coordinates_file_genes_and_hervs_hg19.txt /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_139_AFR_controls_only/coordinates_file_genes_and_hervs_hg19.txt")
+    save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_AFR_229_139.RDat") # will need later for WGCNA
+    quit("no")
+
+
+################################################################
+
+# EUR files for WGCNA (R dat file)
+"/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_EUR_563_242.RDat"
+# EUR coordinates file (must work for CASES AND CONTROLS as well as CONTROLS ONLY = it's the same file, just copied across two different folders)
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/coordinates_file_genes_and_hervs_hg19_563_EUR_all.txt"
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_242_EUR_controls_only/coordinates_file_genes_and_hervs_hg19.txt"
+# EUR all, phenotype file
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/phenotype_file_adjusted_genes_and_hervs_hg19_EUR_all.txt"
+# EUR controls only, phenotype file
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_242_EUR_controls_only/phenotype_file_adjusted_genes_and_hervs_hg19_EUR_controls_only.txt"
+
+# AFR files for WGCNA (R dat file)
+"/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_AFR_229_139.RDat"
+# AFR coordinates file (must work for CASES AND CONTROLS as well as CONTROLS ONLY = it's the same file, just copied across two different folders)
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/coordinates_file_genes_and_hervs_hg19.txt"
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_139_AFR_controls_only/coordinates_file_genes_and_hervs_hg19.txt"
+# AFR all, phenotype file
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/phenotype_file_adjusted_genes_and_hervs_hg19_AFR_all.txt"
+# AFR controls only, phenotype file
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_139_AFR_controls_only/phenotype_file_adjusted_genes_and_hervs_hg19_AFR_controls_only.txt"
+

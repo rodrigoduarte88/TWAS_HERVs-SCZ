@@ -1,0 +1,174 @@
+###############################################################
+## Summarizing HERV counts
+###############################################################
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/  
+
+# creating a table of raw counts
+# replace "final_counts" column with sample name
+cd hervs/
+for NAME in $( ls | sort -u ); do awk -v i="$NAME" '{ sub( /final_count/, i)}1' $NAME/abundance-telescope_report.tsv > $NAME/abundance-telescope_report_2.tsv ; done
+
+# selected only HERV ID and final count column (relabelled as the sample name)
+for NAME in $( ls | sort -u ); do awk -v OFS='\t' '{print $1, $3}' $NAME/abundance-telescope_report_2.tsv > $NAME/abundance-telescope_report_3.tsv ; done
+
+# Use the script below in R to import and concatenate read counts - thanks to Dr Daniel Bean / King's College London!
+# Note that if there are empty files in the directory R will raise an error... do not leave any other files in folder containing subfolder with telescope results (hervs/) 
+conda activate ldsc_R
+R # R>
+	setwd("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/")
+	sample_ids <- dir(file.path("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/hervs/"))
+	names <-substr(sample_ids,1,length(sample_ids))
+	all_dataframes <- list()
+	for(i in c(1:length(names)))
+		{  name <- names[i]
+		filepath <- file.path("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/hervs", name, "abundance-telescope_report_3.tsv")
+		temporary <- read.delim(filepath, sep = "\t", header=TRUE, skip = 1)
+		all_dataframes[[i]] <- temporary
+	  }
+	everything <- Reduce(function(dtf1, dtf2) merge(dtf1, dtf2, by = "transcript", all = TRUE),all_dataframes)
+	everything[is.na(everything)] <- 0 # substitutes NAs for zero. this does not affect words (line, gene or HERV names) that may contain "NA" in name
+	everything = everything[!grepl("__no_feature", everything$transcript),] # this removes  "__no_feature__" counts which is  outputted by Telescope
+	row.names(everything) <- everything$transcript
+	everything$transcript <- NULL
+
+# select only samples of interest
+# A) EUR individuals, cases and controls (563 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_EUR_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_genotype_IDs
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv
+	pd_file <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_all", stringsAsFactors=F, h=T)
+	samples_to_keep <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_genotype_IDs", stringsAsFactors=F, h=F)
+	pd_file[1:4,1:4]
+	head(samples_to_keep)
+	# create pd file corresponding to 590 samples from genotype file (GENOTYPE id!)
+	pd_file_2 <- subset(pd_file, genotype_id %in%samples_to_keep$V1)
+	dim(pd_file_2) # 563
+
+	library(dplyr)
+	library(data.table)
+	# now retrieve the RNASEQ ID of these, and subset the "everything" object based on those
+	everything_ss <- everything[ , colnames(everything) %in% as.character(pd_file_2$RNAseq_name)]
+	# save
+	write.table(everything_ss, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv", quote=FALSE, sep="\t", col.names=NA)
+
+	# Include genotype covariates in pd_file_2 and save
+	geno_covs <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12.eigenvec", stringsAsFactors=F, h=F)
+	geno_covs$V1 <- NULL
+	library(tidyverse)
+	geno_covs <- geno_covs %>% column_to_rownames(var="V2")
+	colnames(geno_covs) <- paste0("PC",c(1:20))
+	geno_covs <- tibble::rownames_to_column(geno_covs, "genotype_ids")
+	pd_file_3 <- merge(pd_file_2, geno_covs, by.x="genotype_id", by.y="genotype_ids")
+	dim(pd_file_2)  
+	dim(pd_file_3)  
+	dim(everything_ss)
+	write.table(pd_file_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv", quote=F, row.names=F, col.names=T)
+
+# B) AFR individuals, cases and controls (229 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_AFR_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_genotype_IDs
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv
+
+	samples_to_keep <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_genotype_IDs", stringsAsFactors=F, h=F)
+	# create pd file corresponding to 590 samples from genotype file (GENOTYPE id!)
+	pd_file_2 <- subset(pd_file, genotype_id %in%samples_to_keep$V1)
+	
+	# now retrieve the RNASEQ ID of these, and subset the "everything" object based on those
+	everything_ss <- everything[ , colnames(everything) %in% as.character(pd_file_2$RNAseq_name)]
+	# save
+	write.table(everything_ss, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv", quote=FALSE, sep="\t", col.names=NA)
+
+	# Include genotype covariates in pd_file_2 and save
+	geno_covs <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12.eigenvec", stringsAsFactors=F, h=F)
+	geno_covs$V1 <- NULL
+	library(tidyverse)
+	geno_covs <- geno_covs %>% column_to_rownames(var="V2")
+	colnames(geno_covs) <- paste0("PC",c(1:20))
+	geno_covs <- tibble::rownames_to_column(geno_covs, "genotype_ids")
+	pd_file_3 <- merge(pd_file_2, geno_covs, by.x="genotype_id", by.y="genotype_ids")
+	dim(pd_file_2)  
+	dim(pd_file_3)  
+	dim(everything_ss)
+	write.table(pd_file_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv", quote=F, row.names=F, col.names=T)
+
+
+# C) EUR individuals, controls only (242 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_242_EUR_controls_only.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_242_EUR_controls_only.tsv
+
+	samples_to_keep <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs", stringsAsFactors=F, h=F)
+	# create pd file corresponding to 590 samples from genotype file (GENOTYPE id!)
+	pd_file_2 <- subset(pd_file, genotype_id %in%samples_to_keep$V1)
+	library(dplyr)
+	library(data.table)
+	# now retrieve the RNASEQ ID of these, and subset the "everything" object based on those
+	everything_ss <- everything[ , colnames(everything) %in% as.character(pd_file_2$RNAseq_name)]
+	# save
+	write.table(everything_ss, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_242_EUR_controls_only.tsv", quote=FALSE, sep="\t", col.names=NA)
+
+	# Include genotype covariates in pd_file_2 and save
+	geno_covs <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2.eigenvec", stringsAsFactors=F, h=F)
+	geno_covs$V1 <- NULL
+	library(tidyverse)
+	geno_covs <- geno_covs %>% column_to_rownames(var="V2")
+	colnames(geno_covs) <- paste0("PC",c(1:20))
+	geno_covs <- tibble::rownames_to_column(geno_covs, "genotype_ids")
+	pd_file_3 <- merge(pd_file_2, geno_covs, by.x="genotype_id", by.y="genotype_ids")
+	dim(pd_file_2)  
+	dim(pd_file_3)  
+	dim(everything_ss)
+	write.table(pd_file_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_242_EUR_controls_only.tsv", quote=F, row.names=F, col.names=T)
+
+# D) AFR individuals, controls only (139 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_139_AFR_controls_only.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_139_AFR_controls_only.tsv
+
+	samples_to_keep <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs", stringsAsFactors=F, h=F)
+	# create pd file corresponding to 590 samples from genotype file (GENOTYPE id!)
+	pd_file_2 <- subset(pd_file, genotype_id %in%samples_to_keep$V1)
+
+	# now retrieve the RNASEQ ID of these, and subset the "everything" object based on those
+	everything_ss <- everything[ , colnames(everything) %in% as.character(pd_file_2$RNAseq_name)]
+	# save
+	write.table(everything_ss, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_139_AFR_controls_only.tsv", quote=FALSE, sep="\t", col.names=NA)
+
+	# Include genotype covariates in pd_file_2 and save
+	geno_covs <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2.eigenvec", stringsAsFactors=F, h=F)
+	geno_covs$V1 <- NULL
+	library(tidyverse)
+	geno_covs <- geno_covs %>% column_to_rownames(var="V2")
+	colnames(geno_covs) <- paste0("PC",c(1:20))
+	geno_covs <- tibble::rownames_to_column(geno_covs, "genotype_ids")
+	pd_file_3 <- merge(pd_file_2, geno_covs, by.x="genotype_id", by.y="genotype_ids")
+	dim(pd_file_2)  
+	dim(pd_file_3)  
+	dim(everything_ss)
+	write.table(pd_file_3, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_139_AFR_controls_only.tsv", quote=F, row.names=F, col.names=T)
+
+
+# Repeating output names for ease:
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_563_EUR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_563_EUR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_229_AFR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_229_AFR_all.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_242_EUR_controls_only.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_242_EUR_controls_only.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/raw_HERV_counts_139_AFR_controls_only.tsv
+# output: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_139_AFR_controls_only.tsv
+
+
+

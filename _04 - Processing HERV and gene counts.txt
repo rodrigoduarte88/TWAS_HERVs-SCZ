@@ -1,0 +1,198 @@
+###############################################################
+## RNAseq processing - CMC1 example (old Rosalind)
+###############################################################
+#!/bin/sh
+#$ -N rnaseq				# job name
+#$ -o ~/logs/				# location of log files
+#$ -V 						# pass environmental variables to job
+#$ -l h_rt=48:00:00 		# limit on Rosalind is 72 hours
+#$ -pe smp 10				# Number of cores you need. Implicates in the amount of memory reserved AND / OR if your job can run multithreaded. // hardware info http://rosalind.kcl.ac.uk/hardware.html
+#$ -l h_vmem=9G 			# How much memory do you need **per core**? LowMemShortterm.q have 9GB per core and the nodes in the HighMemShortterm.q queue have 19GB per core.
+#$ -q HighMemLongterm.q,HighMemShortterm.q,LowMemLongterm.q,LowMemShortterm.q
+#$ -t 10003-10026					# array option
+#$ -tc 40					# Constrain the number of concurrently array jobs to the specified integer
+
+file="/mnt/lustre/datasets/commonmind/batch4/Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam"
+if [ -f "$file" ]
+then
+	echo "$file found..."
+
+	##########################
+	echo "MERGING BAM FILES PER SAMPLE"
+	module load bioinformatics/samtools/1.5
+	mkdir -p /mnt/lustre/datasets/commonmind/temp
+	cd /mnt/lustre/datasets/commonmind/temp
+
+	samtools cat -o /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged.bam /mnt/lustre/datasets/commonmind/batch4/Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam /mnt/lustre/datasets/commonmind/batch4/Sample_${SGE_TASK_ID}.unmapped.bam
+
+	rm /mnt/lustre/datasets/commonmind/batch4/Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam
+	rm /mnt/lustre/datasets/commonmind/batch4/Sample_${SGE_TASK_ID}.unmapped.bam
+
+	echo "SORTING MERGED BAM FILES"
+	samtools sort --threads 10 -n /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged.bam -o /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged_sorted.bam
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged.bam
+
+	echo "CONVERTING SORTED MERGED BAM FILES TO NON REDUNDANT FASTQ FILES"
+	samtools fastq --threads 10 -c 6 -1 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_1.fastq.gz -2 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_2.fastq.gz -N -F 0x100 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged_sorted.bam
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_merged_sorted.bam
+
+	############################
+	echo "FASTQC'ING PREPROCESS FILES"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/fastqc_preprocess
+	module load bioinformatics/FastQC/0.11.3
+	fastqc --threads 10 -o /mnt/lustre/datasets/commonmind/results/fastqc_preprocess/ --extract /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_2.fastq.gz
+
+	############################
+	echo "TRIMMING POOR QUALITY READS"
+	module load general/miniconda/4.3.21
+	source activate Trimmomatic
+	trimmomatic PE -threads 10 -phred33 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_2.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_unpair_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_2.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_unpair_2.fastq.gz LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_unpair_2.fastq.gz
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_unpair_1.fastq.gz
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_1.fastq.gz
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_2.fastq.gz
+
+	##############################
+
+	echo "FASTQC'ING POST-PROCESSED FILES"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/fastqc_postprocess
+	module load bioinformatics/FastQC/0.11.3
+	fastqc --threads 10 -o /mnt/lustre/datasets/commonmind/results/fastqc_postprocess/ --extract /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_2.fastq.gz
+
+	###############################
+
+	echo "TELESCOPE PIPELINE, PART 1: BOWTIE2 ALIGNMENT"
+	source activate TETools
+
+	cd /mnt/lustre/datasets/commonmind/temp
+	bowtie2 --very-sensitive-local -k 100 --threads 10 --score-min L,0,1.6 -x /mnt/lustre/datasets/commonmind/indexes/Bowtie2Index/genome -1 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_1.fastq.gz -2 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_2.fastq.gz -S /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_aligned.sam
+
+	echo "TELESCOPE PIPELINE, PART 2: HERV EXPRESSION QUANTIFICATION"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID}
+	telescope assign --outdir /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID} --exp_tag abundance --theta_prior 100000 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_aligned.sam /users/k1642468/scratch/precious/hg38_herv_60fam.gtf
+	rmdir /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID}
+
+
+	echo "TELESCOPE PIPELINE, PART 2: LINE EXPRESSION QUANTIFICATION"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID}
+	telescope assign --outdir /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID} --exp_tag abundance --theta_prior 100000 /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_aligned.sam /users/k1642468/scratch/precious/hg38_lines.gtf
+	rmdir /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID}
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_aligned.sam
+
+	###############################
+	echo "TRANSCRIPTOME QUANTIFICATION WITH KALLISTO"
+	source activate Kallisto
+	mkdir -p /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID}
+	kallisto quant -t 10 -i /mnt/lustre/datasets/commonmind/indexes/kallisto/hg38_kallisto_index -o /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID} /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_1.fastq.gz /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_2.fastq.gz
+	rmdir /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID}
+
+
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_2.fastq.gz
+	rm /mnt/lustre/datasets/commonmind/temp/Sample_${SGE_TASK_ID}_paired_1.fastq.gz
+	echo "END OF SCRIPT"
+
+else
+	echo "$file not found... END OF SCRIPT"
+fi
+
+
+
+###############################################################
+## RNAseq processing - CMC3 (old Rosalind)
+###############################################################
+
+#!/bin/sh
+#$ -N RNAseq_CMC 			# job name
+#$ -o ~/logs/				# location of log files
+#$ -V 						# pass environmental variables to job
+#$ -l h_rt=48:00:00 		# limit on Rosalind is 72 hours
+#$ -pe smp 10				# Number of cores you need. Implicates in the amount of memory reserved AND / OR if your job can run multithreaded. // hardware info http://rosalind.kcl.ac.uk/hardware.html
+#$ -q HighMemLongterm.q,LowMemLongterm.q,LowMemShortterm.q
+	# $ -l h_vmem=9G 		# How much memory do you need **per core**? LowMemShortterm.q have 9GB per core and the nodes in the HighMemShortterm.q queue have 19GB per core.
+#$ -t 010-468				# array option
+#$ -tc 40					# Constrain the number of concurrently array jobs to the specified integer
+
+file="/users/k1642468/commonmind/Release3/RNAseq/Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam"
+if [ -f "$file" ]
+then
+	echo "$file found..."
+
+	cd /users/k1642468/commonmind/Release3/RNAseq/
+
+	#############
+
+	echo -e "\n\n CONVERTING BAM FILE TO FASTQ FILES WITH NON-REDUNDANT READS \n\n"
+	module load general/openjdk/12.0.1
+	java -jar -Xmx72G ~/programs/picard/picard.jar SamToFastq NON_PF=true INPUT=Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam F=Sample_${SGE_TASK_ID}_1_1.fastq F2=Sample_${SGE_TASK_ID}_1_2.fastq FU=Sample_${SGE_TASK_ID}_unpaired_input.fastq
+
+	rm Sample_${SGE_TASK_ID}_unpaired_input.fastq
+	rm Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam
+	rm Sample_${SGE_TASK_ID}.accepted_hits.sort.coord.bam.bai
+
+	############################
+
+	echo -e "\n\n FASTQC'ing Preprocessed files \n\n"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/fastqc_preprocess
+	module load bioinformatics/FastQC/0.11.3
+	fastqc --threads 10 -o /mnt/lustre/datasets/commonmind/results/fastqc_preprocess/ Sample_${SGE_TASK_ID}_1_1.fastq Sample_${SGE_TASK_ID}_1_2.fastq
+
+	############################
+
+	echo -e "\n\n Trimming poor quality reads \n\n"
+	module unload bioinformatics/FastQC/0.11.3
+	module load general/miniconda/4.3.21
+	source activate Trimmomatic
+	trimmomatic PE -threads 10 -phred33 Sample_${SGE_TASK_ID}_1_1.fastq Sample_${SGE_TASK_ID}_1_2.fastq Sample_${SGE_TASK_ID}_2_1.fastq Sample_${SGE_TASK_ID}_2_1_unpair.fastq Sample_${SGE_TASK_ID}_2_2.fastq Sample_${SGE_TASK_ID}_2_2_unpair.fastq LEADING:3 TRAILING:3 SLIDINGWINDOW:4:15 MINLEN:36
+	rm Sample_${SGE_TASK_ID}_2_2_unpair.fastq
+	rm Sample_${SGE_TASK_ID}_2_1_unpair.fastq
+	rm Sample_${SGE_TASK_ID}_1_1.fastq
+	rm Sample_${SGE_TASK_ID}_1_2.fastq
+
+	##############################
+
+	echo -e "\n\n FASTQC'ing post-processed files \n\n"
+	source deactivate Trimmomatic
+	module load bioinformatics/FastQC/0.11.3
+	mkdir -p /mnt/lustre/datasets/commonmind/results/fastqc_postprocess
+	fastqc --threads 10 -o /mnt/lustre/datasets/commonmind/results/fastqc_postprocess/ Sample_${SGE_TASK_ID}_2_1.fastq Sample_${SGE_TASK_ID}_2_2.fastq
+
+	###############################
+
+	echo -e "\n\n TELESCOPE PIPELINE, PART 1: BOWTIE2 ALIGNMENT \n\n"
+	source activate bowtie2
+	bowtie2 --very-sensitive-local -k 100 --threads 10 --score-min L,0,1.6 -x /users/k1642468/commonmind/Rodrigo/indexes/Bowtie2Index/genome -1 Sample_${SGE_TASK_ID}_2_1.fastq -2 Sample_${SGE_TASK_ID}_2_2.fastq -S Sample_${SGE_TASK_ID}_aligned.sam
+
+	echo -e "\n\n TELESCOPE PIPELINE, PART 2a: HERV EXPRESSION QUANTIFICATION \n\n"
+	source deactivate bowtie2
+	module unload general/miniconda/4.3.21
+	module load utilities/anaconda/2.5.0
+	source activate teletest
+	mkdir -p /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID}
+	telescope assign --outdir /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID} --exp_tag abundance --theta_prior 100000 Sample_${SGE_TASK_ID}_aligned.sam /users/k1642468/scratch/precious/hg38_herv_60fam.gtf
+	rmdir /mnt/lustre/datasets/commonmind/results/HERVs_output/Sample_${SGE_TASK_ID}
+
+	echo -e "\n\n TELESCOPE PIPELINE, PART 2b: LINE EXPRESSION QUANTIFICATION \n\n"
+	mkdir -p /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID}
+	telescope assign --outdir /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID} --exp_tag abundance --theta_prior 100000 Sample_${SGE_TASK_ID}_aligned.sam /users/k1642468/scratch/precious/hg38_lines.gtf
+	rmdir /mnt/lustre/datasets/commonmind/results/LINEs_output/Sample_${SGE_TASK_ID}
+	rm Sample_${SGE_TASK_ID}_aligned.sam
+
+	###############################
+
+	echo -e "\n\n TRANSCRIPTOME QUANTIFICATION WITH KALLISTO \n\n"
+	source deactivate teletest
+	module unload utilities/anaconda/2.5.0
+	module load general/miniconda/4.3.21
+	source activate Kallisto
+	mkdir -p /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID}
+	kallisto quant -t 10 -i /users/k1642468/commonmind/Rodrigo/indexes/kallisto/hg38_kallisto_index -o /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID} Sample_${SGE_TASK_ID}_2_1.fastq Sample_${SGE_TASK_ID}_2_2.fastq
+	rmdir /mnt/lustre/datasets/commonmind/results/kallisto_output/Sample_${SGE_TASK_ID}
+
+	echo -e "\nRemoving garbage..."
+	rm Sample_${SGE_TASK_ID}_2_2.fastq
+	rm Sample_${SGE_TASK_ID}_2_1.fastq
+	echo -e "\n\n\n\n\n END OF SCRIPT \n"
+
+else
+	echo "$file not found... END OF SCRIPT"
+fi

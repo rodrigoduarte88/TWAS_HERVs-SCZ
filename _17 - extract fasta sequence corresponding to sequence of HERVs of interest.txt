@@ -1,0 +1,65 @@
+
+################
+# Get sequences from hg38 HERV annotations 
+################
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta
+wget https://github.com/mlbendall/telescope_annotation_db/raw/master/builds/HERV_rmsk.hg38.v2/genes.gtf
+# replace "gene" with HERV name (in 4th col)
+conda activate Renv_final
+R
+	annot <- read.table("genes.gtf", sep="\t", h=F, stringsAsFactors=F)
+	annot$INDEX <- paste0(annot$V1, "_",annot$V4, "_",annot$V5)
+	library(tidyr)
+	library(dplyr)
+	new_annot <- annot %>% separate(V9, into=c("empty","hervid"), sep = '[; ]')
+	new_annot <- new_annot %>% select(hervid, INDEX) 
+ merged <- merge(annot, new_annot, by.x="INDEX", by.y="INDEX")
+ merged <- select(merged, V1,V2, hervid, V4,V5,V6,V7,V8,V9)
+write.table(merged, "genes_relabel.gtf", quote=F, sep="\t", row.names=F, col.names=F)
+
+conda activate general
+wget https://hgdownload.soe.ucsc.edu/goldenPath/hg38/bigZips/hg38.fa.gz
+bgzip -d hg38.fa.gz # decompress
+samtools faidx hg38.fa # create "fai" index file for fasta
+bedtools getfasta -fo herv_hg38_v2 -s -name -fi hg38.fa -bed genes_relabel.gtf # -fo output file; -fi input file; -s output sequences will be in positive strand only 
+cat herv_hg38_v2 |  cut -f1 -d":" > herv_hg38_v2_sequences.fasta
+
+# To see a sequence, you can use grep to match the herv id, using the flag -A 1 (show the 1st line after the match). E.g.,
+grep -A 1 "ERVLE_1p31.1c" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/ERVLE_1p31.1c
+grep -A 1 "ERV316A3_2q33.1g" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/ERV316A3_2q33.1g
+grep -A 1 "ERV316A3_5q14.3j" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/ERV316A3_5q14.3j
+grep -A 1 "MER4_20q13.13" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta > ~/MER4_20q13.13
+cat ~/MER4_20q13.13 ~/ERV316A3_5q14.3j ~/ERV316A3_2q33.1g ~/ERVLE_1p31.1c > HERVs_of_interest
+
+# Analyse the content of this file on Pfam,
+
+
+# gene coordinates in hg19 (lifted from hg38 gene annotation downloaded from biomaRt): 
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/genes_genes_is_now_hg19.bed
+
+# herv coordinates in hg19 (lifted from hg38.2 HERV annotation): 
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_is_now_hg19.bed
+
+# nucleotide sequence of HERVs, extracted from hg38.v2 annnotation
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gtf_to_fasta/herv_hg38_v2_sequences.fasta
+
+# Sequence of HERVs of interest
+~/HERVs_of_interest
+
+
+
+# Extract positions from HERVs from hg38 (this is useful for UCSC browser)
+grep "ERV316A3_2q33.1g\|ERV316A3_5q14.3j\|MER4_20q13.13\|ERVLE_1p31.1c" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_hg38_0_unlifted.bed 
+chr1    72433538        72435738        ERVLE_1p31.1c   +     
+chr2    199772560       199775568       ERV316A3_2q33.1g        -
+chr5    90670326        90671542        ERV316A3_5q14.3j        +
+chr20   49550311        49558044        MER4_20q13.13   +
+
+# Sequences lifted to hg19 for rTWASs
+grep "ERV316A3_2q33.1g\|ERV316A3_5q14.3j\|MER4_20q13.13\|ERVLE_1p31.1c" /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_563_EUR_all/coordinates_file_genes_and_hervs_hg19_563_EUR_all.txt
+1 72899221 72901421 ERVLE_1p31.1c  
+2 200637283 200640291 ERV316A3_2q33.1g
+20 48166848 48174581 MER4_20q13.13
+5 89966143 89967359 ERV316A3_5q14.3j
+
+

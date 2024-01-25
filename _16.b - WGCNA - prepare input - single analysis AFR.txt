@@ -1,0 +1,300 @@
+
+#######################
+# Input files preparation
+#######################
+
+srun -p cpu,interruptible_cpu -t 8:00:00 --mem=50000 --pty /bin/bash
+conda activate Renv_final_2
+R
+load("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_AFR_229_139.RDat")
+system("mkdir -p /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna_afr")
+setwd("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna_afr")
+library(WGCNA);
+options(stringsAsFactors = FALSE);
+allowWGCNAThreads() #enables multi-threading with the number of threads available
+
+# # relevant data frames in this Rdat environment file
+# mat_adjusted = gene expression matrix, adjusted for SVs // this leads to more genes being assigned to grey module, and to dendrogram looking a bit odd
+# mat          = gene expression matrix // preferred
+# metadata   = pd // preferred
+# metadata_2 = pd + SVs // this would lead to extremely large and uninformative tables, so don't use it
+
+# Data needs transposing for WGCNA
+traitData = metadata 
+datExpr0  <- as.data.frame(t(mat))
+datExpr0[1:5,1:5]
+dim(datExpr0) #   229 19750
+
+# check for gene outliers
+gsg = goodSamplesGenes(datExpr0, verbose = 3); 
+gsg$allOK #TRUE
+
+# cluster samples to see if there are obvious outliers
+sampleTree = hclust(dist(datExpr0), method = "average");
+
+pdf(file = "229 sampleClustering.pdf", width = 36, height = 27);
+  sizeGrWindow(36,27)
+  par(cex = 0.6);
+  par(mar = c(0,4,2,0))
+  plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+  cex.axis = 1.5, cex.main = 2)
+dev.off()
+
+# Looks ok.
+
+#########################################################
+# Correlate expression to known variables
+dim(traitData)
+names(traitData)
+# remove columns that hold information we do not need.
+# allTraits = traitData[, -c(1,2,3,9,16:30,36:90)]; # let's stick to the first 5 PCs, SVs, and the known variables that we know our data is corrected for 
+allTraits = dplyr::select (traitData, "Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", "PC1", "PC2", "PC3", "PC4", "PC5"); # let's stick to the first 5 PCs, the known variables that we know our data is corrected for 
+dim(allTraits)   #  229  11
+
+# select only samples in allTraits that remain in datExpr0
+allTraits <- allTraits[row.names(datExpr0),]
+dim(allTraits)   #   229  11 # all good
+
+names(allTraits)
+#  [1] "Institution" "RIN"         "Profile"     "Gender"      "PMI_hrs"
+#  [6] "Age_bins"    "PC1"         "PC2"         "PC3"         "PC4"
+# [11] "PC5"        
+
+datTraits <- allTraits
+datTraits$Institution <- as.numeric(datTraits$Institution)
+datTraits$Profile <- as.numeric(datTraits$Profile)
+datTraits$Gender <- as.numeric(datTraits$Gender)
+
+# recluster samples
+sampleTree2 = hclust(dist(datExpr0), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = TRUE);
+# Plot the sample dendrogram and the colors underneath.
+pdf(file="229 dendrogram_and_phenotypes_1.pdf", w= 100, h=100)
+  plotDendroAndColors(sampleTree2, traitColors,
+  groupLabels = names(datTraits),
+  main = "Sample dendrogram and trait heatmap")
+dev.off()
+
+# Automatic network topology detection
+datExpr <- datExpr0
+# Choose a set of soft-thresholding powers
+powers = c(1:20)
+
+# signed bicor
+                  # Call the network topology analysis function
+                  sft_1 = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5,networkType = "signed", corFnc = "bicor",blockSize=20000) # signed, bicor
+                  # Plot the results:
+                  pdf(file="229 picksoftthreshold_sft_1.pdf", width=9, height=5)
+                  sizeGrWindow(9, 5) 
+                  par(mfrow = c(1,2));
+                  cex1 = 0.9;
+                  # Scale-free topology fit index as a function of the soft-thresholding power
+                  plot(sft_1$fitIndices[,1], -sign(sft_1$fitIndices[,3])*sft_1$fitIndices[,2],
+                  xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+                  main = paste("Scale independence"));
+                  text(sft_1$fitIndices[,1], -sign(sft_1$fitIndices[,3])*sft_1$fitIndices[,2],
+                  labels=powers,cex=cex1,col="red");
+                  # this line corresponds to using an R^2 cut-off of h = 0.9
+                  abline(h=0.90,col="red")
+                  # Mean connectivity as a function of the soft-thresholding power
+                  plot(sft_1$fitIndices[,1], sft_1$fitIndices[,5],
+                  xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+                  main = paste("Mean connectivity"))
+                  text(sft_1$fitIndices[,1], sft_1$fitIndices[,5], labels=powers, cex=cex1,col="red")
+                  dev.off()
+
+
+
+net_20 = blockwiseModules(datExpr, power = 12, # now the data is non-adjusted, the power needs to be higher (based on the experiments with the data tested above). 12 is also the recommended for signed networks - see https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/faq.html
+minModuleSize = 120, # 
+mergeCutHeight = 0.02, #
+deepSplit = 3.5, #
+networkType = "signed",
+TOMType = "signed",
+corType = "bicor",
+pamRespectsDendro = FALSE,  numericLabels = TRUE,
+maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) 
+
+# plot
+pdf(file="229 dendrogram_net_20.pdf", width=12, height=9)
+  sizeGrWindow(12, 9)
+  mergedColors = labels2colors(net_20$colors)
+  plotDendroAndColors(net_20$dendrograms[[1]], mergedColors[net_20$blockGenes[[1]]], 
+  "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+dev.off()
+
+table(net_20$colors)
+
+#    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# 1284 5213 1586 1280 1238 1159 1038  986  915  810  773  715  711  683  460  434
+#   16
+#  326
+
+
+#######################
+# net_20: identify number of modules
+#######################
+
+no_modules_net_20 <- table(net_20$colors)      
+write.table(no_modules_net_20, "no_modules_net_20.tsv", sep ="\t", quote=FALSE, row.names=FALSE)
+
+
+###############
+# calculating module-trait relationships (there shouldn't be any, since the expression data has been corrected for all)
+###############
+
+moduleLabels = net_20$colors
+moduleColors = labels2colors(net_20$colors)
+MEs = net_20$MEs;
+geneTree = net_20$dendrograms[[1]];
+
+
+nGenes = ncol(datExpr);
+nSamples = nrow(datExpr);
+# Recalculate eigengenes with color labels
+MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+
+# Will display correlations and their p-values
+pdf(file="229 module_trait_relationships_net_20.pdf", w=10,h=6)
+  sizeGrWindow(10,6)
+  textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+  signif(moduleTraitPvalue, 1), ")", sep = "");
+  dim(textMatrix) = dim(moduleTraitCor)
+  par(mar = c(6, 8.5, 3, 3));
+  # Display the correlation values within a heatmap plot
+  labeledHeatmap(Matrix = moduleTraitCor,
+                  xLabels = names(datTraits),
+                  yLabels = names(MEs),
+                  ySymbols = names(MEs),
+                  colorLabels = FALSE,
+                  colors = blueWhiteRed(50),
+                  textMatrix = textMatrix,
+                  setStdMargins = FALSE,
+                  cex.text = 0.5,
+                  zlim = c(-1,1),
+                  main = paste("Module-trait relationships"))
+dev.off()
+
+
+#############
+# Calculate module membership (gene-significance is not needed, since we are not trying to correlate genes to specific phenotypes/confounders)
+#############
+        # # Define variable weight containing the weight column of datTrait
+        # weight = as.data.frame(datTraits$weight_g);
+        # names(weight) = "weight"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+geneModuleMembership = as.data.frame(cor(datExpr, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+names(geneModuleMembership) = paste0(modNames, "_MM");
+names(MMPvalue) = paste0(modNames, "_p.MM")
+        # geneTraitSignificance = as.data.frame(cor(datExpr, weight, use = "p"));
+        # GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+        # names(geneTraitSignificance) = paste("GS.", names(weight), sep="");
+        # names(GSPvalue) = paste("p.GS.", names(weight), sep="");
+
+# Create the starting data frame
+all.equal(row.names(MMPvalue), row.names(geneModuleMembership))
+geneInfo0 = data.frame(
+              genetic_feature = row.names(MMPvalue),
+              moduleColor = moduleColors,
+              MMPvalue,
+              geneModuleMembership
+              )
+
+# Order the genes in the geneInfo variable first by module color
+geneInfo = geneInfo0[order(geneInfo0$moduleColor), ]
+
+# Order the columns by column order (alphabetically)
+geneInfo = geneInfo[, order(names(geneInfo0))]
+geneInfo <- data.table::setcolorder(geneInfo, neworder = c("genetic_feature", "moduleColor"))
+
+write.table(geneInfo, file = "single_analysis-GS_MM_Full_Network_Results.tsv",
+          row.names = FALSE, quote = FALSE, sep="\t")
+
+save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna_afr/229 environment_single-network_net_20.RDat")
+
+##########################
+# eigengene network relationships
+##########################
+
+
+# conda activate Renv_final
+# R
+# setwd("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna")
+# library(WGCNA);
+# options(stringsAsFactors = FALSE);
+# allowWGCNAThreads() #enables multi-threading with the number of threads available
+# load("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna/229 environment_single-network_net_20.RDat")
+
+
+# Recalculate module eigengenes
+MEs = moduleEigengenes(datExpr, moduleColors)$eigengenes
+
+# Plot the relationships among the eigengenes 
+pdf(file="229 relationship_between_eigengenes net_20.pdf", w=5, h=7.5)
+  sizeGrWindow(5,7.5);
+  par(cex = 0.9)
+  plotEigengeneNetworks(MEs, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle= 90)
+dev.off()
+
+
+###############################
+# Gene ontology of each module
+###############################
+# source("https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/GeneAnnotation/installAnRichment.R");
+# installAnRichment();
+options(stringsAsFactors = FALSE);
+library("anRichment");
+data<- as.data.frame(geneInfo)
+data <- data[,1:2]
+
+# data <- data[!data$ModuleColor=="grey",]
+
+symbol = data$genetic_feature;
+moduleColor = data$moduleColor
+table(moduleColor)
+
+entrez = convert2entrez(organism = "human", symbol = symbol);
+table(is.finite(entrez))
+
+GOcollection = buildGOcollection(organism = "human")
+GOenrichment = enrichmentAnalysis(
+  classLabels = moduleColor, identifiers = entrez,
+  refCollection = GOcollection,
+  useBackground = "given",
+  threshold = 1, # to report all GO terms tested, for the volcano plot
+  thresholdType = "FDR", getFDR=TRUE,
+  getOverlapEntrez = TRUE,
+  getOverlapSymbols = TRUE,
+  ignoreLabels = "grey");
+
+
+collectGarbage();
+names(GOenrichment)
+names(GOenrichment$enrichmentTable);
+table.display = GOenrichment$enrichmentTable;
+table.display$overlapGenes = shortenStrings(table.display$overlapGenes, 
+                                            maxLength = 70,
+                                            split = "|");
+
+write.table(table.display, file = "GOenrichment-enrichmentTable-complete.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+# select only top 10 and Bonferroni  < 0.05
+range(table.display$FDR)
+all_modules <- unique(table.display$class)
+table(all_modules)
+
+top10each_final = table.display[table.display$rank %in% 1:10,]
+write.table(top10each_final, file = "GOenrichment-enrichmentTable-top10.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+top10each_final = top10each_final[top10each_final$Bonferroni < 0.05,]
+write.table(top10each_final, file = "GOenrichment-enrichmentTable-top10-Bonferroni.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+
+save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna_afr/229 environment_single-network_net_20.RDat")
+

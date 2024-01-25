@@ -1,0 +1,13 @@
+name: genopred
+channels:
+  - r
+  - bioconda
+  - conda-forge
+  - defaults
+dependencies:
+  - r-data.table
+  - r-caret
+  - r-proc
+  - r-verification
+  - r-ggplot2
+  - r-cowplot

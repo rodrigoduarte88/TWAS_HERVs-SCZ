@@ -1,0 +1,1149 @@
+
+#######################
+# Input files preparation
+#######################
+
+srun -p cpu,interruptible_cpu -t 8:00:00 --mem=50000 --pty /bin/bash
+conda activate Renv_final_2
+R
+load("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/expression_data/environment_EUR_563_242.RDat")
+system("mkdir -p /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna")
+setwd("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna")
+library(WGCNA);
+options(stringsAsFactors = FALSE);
+allowWGCNAThreads() #enables multi-threading with the number of threads available
+
+# # relevant data frames in this Rdat environment file
+# mat_adjusted = gene expression matrix, adjusted for SVs // this leads to more genes being assigned to grey module, and to dendrogram looking a bit odd
+# mat          = gene expression matrix // preferred
+# metadata   = pd // preferred
+# metadata_2 = pd + SVs // this would lead to extremely large and uninformative tables, so don't use it
+
+# Data needs transposing for WGCNA
+traitData = metadata 
+datExpr0  <- as.data.frame(t(mat))
+datExpr0[1:5,1:5]
+dim(datExpr0) #   563 19611
+
+# check for gene outliers
+gsg = goodSamplesGenes(datExpr0, verbose = 3); 
+gsg$allOK #TRUE
+
+# cluster samples to see if there are obvious outliers
+sampleTree = hclust(dist(datExpr0), method = "average");
+
+pdf(file = "563 sampleClustering.pdf", width = 36, height = 27);
+  sizeGrWindow(36,27)
+  par(cex = 0.6);
+  par(mar = c(0,4,2,0))
+  plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+  cex.axis = 1.5, cex.main = 2)
+dev.off()
+
+# # There are a few outliers, since now the data is unadjusted. Just remove them following WCGNA's tutorial snippet
+
+# pdf(file = "sampleClustering_treecut.pdf", width = 36, height = 27);
+#   sizeGrWindow(36,27)
+#   par(cex = 0.6);
+#   par(mar = c(0,4,2,0))
+#   plot(sampleTree, main = "Sample clustering to detect outliers", sub="", xlab="", cex.lab = 1.5,
+#   cex.axis = 1.5, cex.main = 2)
+#   # Plot a line to show the cut
+#   abline(h = 225, col = "red");
+# dev.off()
+
+# # Determine cluster under the line height
+# clust = cutreeStatic(sampleTree, cutHeight = 225, minSize = 10)
+# table(clust)
+# # clust 1 contains the samples we want to keep.
+# keepSamples = (clust==1)
+# datExpr0 = datExpr0[keepSamples, ]
+# dim(datExpr0) #  585 19605 (five unadjusted outliers removed)
+
+#########################################################
+# Correlate expression to known variables
+dim(traitData)
+names(traitData)
+# remove columns that hold information we do not need.
+# allTraits = traitData[, -c(1,2,3,9,16:30,36:90)]; # let's stick to the first 5 PCs, SVs, and the known variables that we know our data is corrected for 
+allTraits = dplyr::select (traitData, "Institution", "RIN", "Profile", "Gender", "PMI_hrs", "Age_bins", "PC1", "PC2", "PC3", "PC4", "PC5"); # let's stick to the first 5 PCs, the known variables that we know our data is corrected for 
+dim(allTraits)   #  563  11
+
+# select only samples in allTraits that remain in datExpr0
+allTraits <- allTraits[row.names(datExpr0),]
+dim(allTraits)   #   563  11 # all good
+
+names(allTraits)
+#  [1] "Institution" "RIN"         "Profile"     "Gender"      "PMI_hrs"
+#  [6] "Age_bins"    "PC1"         "PC2"         "PC3"         "PC4"
+# [11] "PC5"        
+
+datTraits <- allTraits
+datTraits$Institution <- as.numeric(datTraits$Institution)
+datTraits$Profile <- as.numeric(datTraits$Profile)
+datTraits$Gender <- as.numeric(datTraits$Gender)
+
+# recluster samples
+sampleTree2 = hclust(dist(datExpr0), method = "average")
+# Convert traits to a color representation: white means low, red means high, grey means missing entry
+traitColors = numbers2colors(datTraits, signed = TRUE);
+# Plot the sample dendrogram and the colors underneath.
+pdf(file="563 dendrogram_and_phenotypes_1.pdf", w= 100, h=100)
+  plotDendroAndColors(sampleTree2, traitColors,
+  groupLabels = names(datTraits),
+  main = "Sample dendrogram and trait heatmap")
+dev.off()
+
+# Automatic network topology detection
+datExpr <- datExpr0
+# Choose a set of soft-thresholding powers
+powers = c(1:20)
+
+# signed bicor
+                  # Call the network topology analysis function
+                  sft_1 = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5,networkType = "signed", corFnc = "bicor",blockSize=20000) # signed, bicor
+                  # Plot the results:
+                  pdf(file="563 picksoftthreshold_sft_1.pdf", width=9, height=5)
+                  sizeGrWindow(9, 5) 
+                  par(mfrow = c(1,2));
+                  cex1 = 0.9;
+                  # Scale-free topology fit index as a function of the soft-thresholding power
+                  plot(sft_1$fitIndices[,1], -sign(sft_1$fitIndices[,3])*sft_1$fitIndices[,2],
+                  xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+                  main = paste("Scale independence"));
+                  text(sft_1$fitIndices[,1], -sign(sft_1$fitIndices[,3])*sft_1$fitIndices[,2],
+                  labels=powers,cex=cex1,col="red");
+                  # this line corresponds to using an R^2 cut-off of h = 0.9
+                  abline(h=0.90,col="red")
+                  # Mean connectivity as a function of the soft-thresholding power
+                  plot(sft_1$fitIndices[,1], sft_1$fitIndices[,5],
+                  xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+                  main = paste("Mean connectivity"))
+                  text(sft_1$fitIndices[,1], sft_1$fitIndices[,5], labels=powers, cex=cex1,col="red")
+                  dev.off()
+
+
+              #     # let's try signed hybrid, pearson
+              #     # Call the network topology analysis function
+              #     sft_2 = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5,networkType = "signed",blockSize=20000) #signed, pearson
+              #     # Plot the results:
+              #     pdf(file="picksoftthreshold_sft_2.pdf", width=9, height=5)
+              #     sizeGrWindow(9, 5) 
+              #     par(mfrow = c(1,2));
+              #     cex1 = 0.9;
+              #     # Scale-free topology fit index as a function of the soft-thresholding power
+              #     plot(sft_2$fitIndices[,1], -sign(sft_2$fitIndices[,3])*sft_2$fitIndices[,2],
+              #     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+              #     main = paste("Scale independence"));
+              #     text(sft_2$fitIndices[,1], -sign(sft_2$fitIndices[,3])*sft_2$fitIndices[,2],
+              #     labels=powers,cex=cex1,col="red");
+              #     # this line corresponds to using an R^2 cut-off of h = 0.9
+              #     abline(h=0.90,col="red")
+              #     # Mean connectivity as a function of the soft-thresholding power
+              #     plot(sft_2$fitIndices[,1], sft_2$fitIndices[,5],
+              #     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+              #     main = paste("Mean connectivity"))
+              #     text(sft_2$fitIndices[,1], sft_2$fitIndices[,5], labels=powers, cex=cex1,col="red")
+              #     dev.off()
+
+
+
+
+              #     # let's try signed hybrid, bicor
+              #     # Call the network topology analysis function
+              #     sft_3 = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5,networkType = "signed hybrid", corFnc = "bicor",blockSize=20000) # signed hybrid, bicor
+              #     # Plot the results:
+              #     pdf(file="picksoftthreshold_sft_3.pdf", width=9, height=5)
+              #     sizeGrWindow(9, 5) 
+              #     par(mfrow = c(1,2));
+              #     cex1 = 0.9;
+              #     # Scale-free topology fit index as a function of the soft-thresholding power
+              #     plot(sft_3$fitIndices[,1], -sign(sft_3$fitIndices[,3])*sft_3$fitIndices[,2],
+              #     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+              #     main = paste("Scale independence"));
+              #     text(sft_3$fitIndices[,1], -sign(sft_3$fitIndices[,3])*sft_3$fitIndices[,2],
+              #     labels=powers,cex=cex1,col="red");
+              #     # this line corresponds to using an R^2 cut-off of h = 0.9
+              #     abline(h=0.90,col="red")
+              #     # Mean connectivity as a function of the soft-thresholding power
+              #     plot(sft_3$fitIndices[,1], sft_3$fitIndices[,5],
+              #     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+              #     main = paste("Mean connectivity"))
+              #     text(sft_3$fitIndices[,1], sft_3$fitIndices[,5], labels=powers, cex=cex1,col="red")
+              #     dev.off()
+
+
+
+              # # signed pearson
+              #    sft_4 = pickSoftThreshold(datExpr, powerVector = powers, verbose = 5,networkType = "signed hybrid", blockSize=20000) # signed hybrid, pearson
+              #     # Plot the results:
+              #     pdf(file="picksoftthreshold_sft_4.pdf", width=9, height=5)
+              #     sizeGrWindow(9, 5) 
+              #     par(mfrow = c(1,2));
+              #     cex1 = 0.9;
+              #     # Scale-free topology fit index as a function of the soft-thresholding power
+              #     plot(sft_4$fitIndices[,1], -sign(sft_4$fitIndices[,3])*sft_4$fitIndices[,2],
+              #     xlab="Soft Threshold (power)",ylab="Scale Free Topology Model Fit,signed R^2",type="n",
+              #     main = paste("Scale independence"));
+              #     text(sft_4$fitIndices[,1], -sign(sft_4$fitIndices[,3])*sft_4$fitIndices[,2],
+              #     labels=powers,cex=cex1,col="red");
+              #     # this line corresponds to using an R^2 cut-off of h = 0.9
+              #     abline(h=0.90,col="red")
+              #     # Mean connectivity as a function of the soft-thresholding power
+              #     plot(sft_4$fitIndices[,1], sft_4$fitIndices[,5],
+              #     xlab="Soft Threshold (power)",ylab="Mean Connectivity", type="n",
+              #     main = paste("Mean connectivity"))
+              #     text(sft_4$fitIndices[,1], sft_4$fitIndices[,5], labels=powers, cex=cex1,col="red")
+              #     dev.off()
+
+# best one was signed, bicor. Soft threshold of 4. (signed, bicor, power 4). However, recommended is 12 for signed networks!
+
+# # Now construct the best network topology
+# # signed, pearson,  no minKMEtoStay or reassignThresh thresholds
+# net_1 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.10, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5)
+# # plot
+# pdf(file="dendrogram_net_1.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_1$colors)
+# plotDendroAndColors(net_1$dendrograms[[1]], mergedColors[net_1$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_1$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 8690 3956 2558 1196  889  523  517  502  425  354
+
+
+# # signed, pearson,  with minKMEtoStay and reassignThresh thresholds
+# net_2 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.10, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.3, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_2.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_2$colors)
+# plotDendroAndColors(net_2$dendrograms[[1]], mergedColors[net_2$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_2$colors)
+# #    0    1    2    3    4    5    6    7    8
+# # 9175 3913 2398 1159  883  610  514  506  452
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_3 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.10, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.3, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_3.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_3$colors)
+# plotDendroAndColors(net_3$dendrograms[[1]], mergedColors[net_3$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_3$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 8349 3955 2504 1176 1174  626  620  473  432  301
+
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_4 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.85, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.3, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_4.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_4$colors)
+# plotDendroAndColors(net_4$dendrograms[[1]], mergedColors[net_4$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_4$colors)
+# #   0    1    2    3    4
+# # 8349 5757 3678 1353  473
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_5 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.05, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.3, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_5.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_5$colors)
+# plotDendroAndColors(net_5$dendrograms[[1]], mergedColors[net_5$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_5$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 8349 3955 2504 1176 1174  626  620  473  432  301
+
+
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_6 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.05, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_6.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_6$colors)
+# plotDendroAndColors(net_6$dendrograms[[1]], mergedColors[net_6$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_6$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 5503 4913 2997 1592 1504  791  790  601  542  377
+
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_7 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.05, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.3, reassignThresh=0.1)
+# # plot
+# pdf(file="dendrogram_net_7.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_7$colors)
+# plotDendroAndColors(net_7$dendrograms[[1]], mergedColors[net_7$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_7$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 8349 3953 2493 1184 1173  628  619  473  434  304
+
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_8 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.05, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.1)
+# # plot
+# pdf(file="dendrogram_net_8.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_8$colors)
+# plotDendroAndColors(net_8$dendrograms[[1]], mergedColors[net_8$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_8$colors)
+# #    0    1    2    3    4    5    6    7    8    9
+# # 5503 4904 2979 1608 1501  794  791  604  545  381
+
+
+
+
+
+
+# # signed, bicor,  with minKMEtoStay and reassignThresh thresholds
+# net_9 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 200, 
+# mergeCutHeight = 0.01, 
+# deepSplit = 4, 
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05)
+# # plot
+# pdf(file="dendrogram_net_9.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_9$colors)
+# plotDendroAndColors(net_9$dendrograms[[1]], mergedColors[net_9$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_9$colors)
+# #   0    1    2    3    4    5    6    7    8    9
+# # 5503 4913 2997 1592 1504  791  790  601  542  377
+
+
+
+# This was the best, but power too low!! Increase power (see net_15/16)
+# net_10 = blockwiseModules(datExpr, power = 4, 
+# minModuleSize = 90, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_10.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_10$colors)
+# plotDendroAndColors(net_10$dendrograms[[1]], mergedColors[net_10$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_10$colors)
+# #    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14
+# # 5416 4492 2477 1384 1277  899  749  515  395  381  344  342  335  334  270
+
+# library(GmicR)
+# net_10b <- Auto_WGCNA(datExpr, colname_correct = TRUE, minModuleSize = 100,
+#   deepSplit = 4, networkType = "signed", TOMType = "signed",
+#   #corFnc = "bicor",
+#   mergeCutHeight = 0.01,
+#   sft_RsquaredCut = 0.80,
+#    maxBlockSize = 25000
+# )
+# # plot
+# pdf(file="dendrogram_net_10b.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_10b$colors)
+# plotDendroAndColors(net_10b$dendrograms[[1]], mergedColors[net_10b$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_10b$colors)
+# #   reassignThreshold = 1e-06,
+
+
+
+# # net_10 seems to be the best. Now change test another network type (signed hybrid, pearson, new power = sft_4 above).
+# net_11 = blockwiseModules(datExpr, power = 6, 
+# minModuleSize = 100, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed hybrid",
+# TOMType = "signed",
+# # corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_11.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_11$colors)
+# plotDendroAndColors(net_11$dendrograms[[1]], mergedColors[net_11$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_11$colors)
+# #    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# # 7610 4337 1029  773  709  561  525  484  467  384  362  342  338  296  274  264
+# #   16   17   18   19
+# #  257  232  218  148
+
+
+# # same as net_11 but with PAMSTAGEon / best one so far.
+# net_12 = blockwiseModules(datExpr, power = 6, 
+# minModuleSize = 100, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed hybrid",
+# TOMType = "signed",
+# pamStage = TRUE, pamRespectsDendro = TRUE, #
+# # corType = "bicor",
+# numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_12.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_12$colors)
+# plotDendroAndColors(net_12$dendrograms[[1]], mergedColors[net_12$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_12$colors)
+# #     0     1     2     3     4     5     6     7     8     9    10    11    12
+# # 11886  2626   791   535   507   425   340   340   305   280   247   242   226
+# #    13    14    15    16    17    18
+# #   162   160   149   139   134   116
+
+
+
+# net_13 = blockwiseModules(datExpr, power = 6, 
+# minModuleSize = 100, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed hybrid",
+# TOMType = "signed",
+# pamStage = TRUE, pamRespectsDendro = FALSE, #
+# # corType = "bicor",
+# numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_13.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_13$colors)
+# plotDendroAndColors(net_13$dendrograms[[1]], mergedColors[net_13$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_13$colors)
+# #    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# # 7610 4337 1029  773  709  561  525  484  467  384  362  342  338  296  274  264
+# #   16   17   18   19
+# #  257  232  218  148
+
+
+
+
+# # same as net_12 but with power increased to 10.
+# net_14 = blockwiseModules(datExpr, power = 10, 
+# minModuleSize = 100, #  maintain minimum number of genes per module, otherwise we cant extract GO information
+# mergeCutHeight = 0.01, # this helps cut into more modules
+# deepSplit = 4, # # this helps cut into more modules
+# networkType = "signed hybrid", 
+# TOMType = "signed",
+# pamStage = TRUE, pamRespectsDendro = TRUE, # this helps maintain blocks of colour in the dendrogram
+# # corType = "bicor",
+# numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_14.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_14$colors)
+# plotDendroAndColors(net_14$dendrograms[[1]], mergedColors[net_14$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_14$colors)
+# #     0     1     2     3     4     5     6     7     8     9    10    11    12
+# # 11886  2626   791   535   507   425   340   340   305   280   247   242   226
+# #    13    14    15    16    17    18
+# #   162   160   149   139   134   116
+
+
+
+# net_15 = blockwiseModules(datExpr, power = 8, 
+# minModuleSize = 90, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_15.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_15$colors)
+# plotDendroAndColors(net_15$dendrograms[[1]], mergedColors[net_15$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_15$colors)
+# #   0    1    2    3    4    5    6    7    8    9
+# # 8706 3190 2412 2142 1533  493  437  281  234  176
+
+
+
+
+# net_16 = blockwiseModules(datExpr, power = 12, 
+# minModuleSize = 90, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_16.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_16$colors)
+# plotDendroAndColors(net_16$dendrograms[[1]], mergedColors[net_16$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_16$colors)
+# #   0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# # 5653 4726 1449 1357  992  673  644  607  507  465  449  410  404  365  262  250
+# #   16   17
+# #  211  186
+
+
+
+
+# net_16 = blockwiseModules(datExpr, power = 10, 
+# minModuleSize = 80, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_16.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_16$colors)
+# plotDendroAndColors(net_16$dendrograms[[1]], mergedColors[net_16$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_16$colors)
+#     0     1     2     3     4     5     6     7
+# 12899  2040  1486  1290   894   634   248   113
+
+
+
+# net_17 = blockwiseModules(datExpr, power = 12, 
+# minModuleSize = 80, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_17.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_17$colors)
+# plotDendroAndColors(net_17$dendrograms[[1]], mergedColors[net_17$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_17$colors)
+#    0     1     2     3     4     5
+# 16437  1085   801   626   332   323
+
+
+
+
+# net_18 = blockwiseModules(datExpr, power = 8, 
+# minModuleSize = 40, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) #
+# # plot
+# pdf(file="dendrogram_net_18.pdf", width=12, height=9)
+# sizeGrWindow(12, 9)
+# mergedColors = labels2colors(net_18$colors)
+# plotDendroAndColors(net_18$dendrograms[[1]], mergedColors[net_18$blockGenes[[1]]], 
+# "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+# table(net_18$colors)
+#    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# 8642 3021 1441 1376 1125 1123  609  294  252  234  219  218  204  192  168  138
+#   16   17   18   19
+#  120   96   70   62
+
+
+# net_19 = blockwiseModules(datExpr, power = 12, # now the data is non-adjusted, the power needs to be higher (based on the experiments with the data tested above). 12 is also the recommended for signed networks - see https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/faq.html
+# minModuleSize = 100, # 
+# mergeCutHeight = 0.01, #
+# deepSplit = 4, #
+# networkType = "signed",
+# TOMType = "signed",
+# corType = "bicor",
+# pamRespectsDendro = FALSE,  numericLabels = TRUE,
+# maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) 
+
+# # plot
+# pdf(file="dendrogram_net_19.pdf", width=12, height=9)
+#   sizeGrWindow(12, 9)
+#   mergedColors = labels2colors(net_19$colors)
+#   plotDendroAndColors(net_19$dendrograms[[1]], mergedColors[net_19$blockGenes[[1]]], 
+#   "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+# dev.off()
+
+# table(net_19$colors)
+#    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# 1276 4901 1586 1331 1224 1024  880  785  772  749  713  644  595  589  499  395
+#   16   17   18   19   20
+#  390  389  305  296  262
+
+
+
+net_20 = blockwiseModules(datExpr, power = 12, # now the data is non-adjusted, the power needs to be higher (based on the experiments with the data tested above). 12 is also the recommended for signed networks - see https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/Rpackages/WGCNA/faq.html
+minModuleSize = 120, # 
+mergeCutHeight = 0.02, #
+deepSplit = 3.5, #
+networkType = "signed",
+TOMType = "signed",
+corType = "bicor",
+pamRespectsDendro = FALSE,  numericLabels = TRUE,
+maxBlockSize = 20000, verbose = 5, minKMEtoStay=0.2, reassignThresh=0.05) 
+
+# plot
+pdf(file="563 dendrogram_net_20.pdf", width=12, height=9)
+  sizeGrWindow(12, 9)
+  mergedColors = labels2colors(net_20$colors)
+  plotDendroAndColors(net_20$dendrograms[[1]], mergedColors[net_20$blockGenes[[1]]], 
+  "Module colors", dendroLabels = FALSE, hang = 0.03, addGuide = TRUE, guideHang = 0.05)
+dev.off()
+
+table(net_20$colors)
+
+#    0    1    2    3    4    5    6    7    8    9   10   11   12   13   14   15
+# 1284 5213 1586 1280 1238 1159 1038  986  915  810  773  715  711  683  460  434
+#   16
+#  326
+
+
+#######################
+# net_20: identify number of modules
+#######################
+
+no_modules_net_20 <- table(net_20$colors)      
+write.table(no_modules_net_20, "no_modules_net_20.tsv", sep ="\t", quote=FALSE, row.names=FALSE)
+
+
+###############
+# calculating module-trait relationships (there shouldn't be any, since the expression data has been corrected for all)
+###############
+
+moduleLabels = net_20$colors
+moduleColors = labels2colors(net_20$colors)
+MEs = net_20$MEs;
+geneTree = net_20$dendrograms[[1]];
+
+
+nGenes = ncol(datExpr);
+nSamples = nrow(datExpr);
+# Recalculate eigengenes with color labels
+MEs0 = moduleEigengenes(datExpr, moduleColors)$eigengenes
+MEs = orderMEs(MEs0)
+moduleTraitCor = cor(MEs, datTraits, use = "p");
+moduleTraitPvalue = corPvalueStudent(moduleTraitCor, nSamples);
+
+# Will display correlations and their p-values
+pdf(file="563 module_trait_relationships_net_20.pdf", w=10,h=6)
+  sizeGrWindow(10,6)
+  textMatrix = paste(signif(moduleTraitCor, 2), "\n(",
+  signif(moduleTraitPvalue, 1), ")", sep = "");
+  dim(textMatrix) = dim(moduleTraitCor)
+  par(mar = c(6, 8.5, 3, 3));
+  # Display the correlation values within a heatmap plot
+  labeledHeatmap(Matrix = moduleTraitCor,
+                  xLabels = names(datTraits),
+                  yLabels = names(MEs),
+                  ySymbols = names(MEs),
+                  colorLabels = FALSE,
+                  colors = blueWhiteRed(50),
+                  textMatrix = textMatrix,
+                  setStdMargins = FALSE,
+                  cex.text = 0.5,
+                  zlim = c(-1,1),
+                  main = paste("Module-trait relationships"))
+dev.off()
+
+
+#############
+# Calculate module membership (gene-significance is not needed, since we are not trying to correlate genes to specific phenotypes/confounders)
+#############
+        # # Define variable weight containing the weight column of datTrait
+        # weight = as.data.frame(datTraits$weight_g);
+        # names(weight) = "weight"
+# names (colors) of the modules
+modNames = substring(names(MEs), 3)
+geneModuleMembership = as.data.frame(cor(datExpr, MEs, use = "p"));
+MMPvalue = as.data.frame(corPvalueStudent(as.matrix(geneModuleMembership), nSamples));
+names(geneModuleMembership) = paste0(modNames, "_MM");
+names(MMPvalue) = paste0(modNames, "_p.MM")
+        # geneTraitSignificance = as.data.frame(cor(datExpr, weight, use = "p"));
+        # GSPvalue = as.data.frame(corPvalueStudent(as.matrix(geneTraitSignificance), nSamples));
+        # names(geneTraitSignificance) = paste("GS.", names(weight), sep="");
+        # names(GSPvalue) = paste("p.GS.", names(weight), sep="");
+
+# Create the starting data frame
+all.equal(row.names(MMPvalue), row.names(geneModuleMembership))
+geneInfo0 = data.frame(
+              genetic_feature = row.names(MMPvalue),
+              moduleColor = moduleColors,
+              MMPvalue,
+              geneModuleMembership
+              )
+
+# Order the genes in the geneInfo variable first by module color
+geneInfo = geneInfo0[order(geneInfo0$moduleColor), ]
+
+# Order the columns by column order (alphabetically)
+geneInfo = geneInfo[, order(names(geneInfo0))]
+geneInfo <- data.table::setcolorder(geneInfo, neworder = c("genetic_feature", "moduleColor"))
+
+write.table(geneInfo, file = "single_analysis-GS_MM_Full_Network_Results.tsv",
+          row.names = FALSE, quote = FALSE, sep="\t")
+
+save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna/563 environment_single-network_net_20.RDat")
+
+##########################
+# eigengene network relationships
+##########################
+
+
+# conda activate Renv_final
+# R
+# setwd("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna")
+# library(WGCNA);
+# options(stringsAsFactors = FALSE);
+# allowWGCNAThreads() #enables multi-threading with the number of threads available
+# load("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna/563 environment_single-network_net_20.RDat")
+
+
+# Recalculate module eigengenes
+MEs = moduleEigengenes(datExpr, moduleColors)$eigengenes
+
+# Plot the relationships among the eigengenes 
+pdf(file="563 relationship_between_eigengenes net_20.pdf", w=5, h=7.5)
+  sizeGrWindow(5,7.5);
+  par(cex = 0.9)
+  plotEigengeneNetworks(MEs, "", marDendro = c(0,4,1,2), marHeatmap = c(3,4,1,2), cex.lab = 0.8, xLabelsAngle= 90)
+dev.off()
+
+
+###############################
+# Gene ontology of each module
+###############################
+# source("https://horvath.genetics.ucla.edu/html/CoexpressionNetwork/GeneAnnotation/installAnRichment.R");
+# installAnRichment();
+options(stringsAsFactors = FALSE);
+library("anRichment");
+data<- as.data.frame(geneInfo)
+data <- data[,1:2]
+
+# data <- data[!data$ModuleColor=="grey",]
+
+symbol = data$genetic_feature;
+moduleColor = data$moduleColor
+table(moduleColor)
+
+entrez = convert2entrez(organism = "human", symbol = symbol);
+table(is.finite(entrez))
+
+GOcollection = buildGOcollection(organism = "human")
+GOenrichment = enrichmentAnalysis(
+  classLabels = moduleColor, identifiers = entrez,
+  refCollection = GOcollection,
+  useBackground = "given",
+  threshold = 1, # to report all GO terms tested, for the volcano plot
+  thresholdType = "FDR", getFDR=TRUE,
+  getOverlapEntrez = TRUE,
+  getOverlapSymbols = TRUE,
+  ignoreLabels = "grey");
+
+
+collectGarbage();
+names(GOenrichment)
+names(GOenrichment$enrichmentTable);
+table.display = GOenrichment$enrichmentTable;
+table.display$overlapGenes = shortenStrings(table.display$overlapGenes, 
+                                            maxLength = 70,
+                                            split = "|");
+
+write.table(table.display, file = "GOenrichment-enrichmentTable-complete.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+# select only top 10 and Bonferroni  < 0.05
+range(table.display$FDR)
+all_modules <- unique(table.display$class)
+table(all_modules)
+
+top10each_final = table.display[table.display$rank %in% 1:10,]
+write.table(top10each_final, file = "GOenrichment-enrichmentTable-top10.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+top10each_final = top10each_final[top10each_final$Bonferroni < 0.05,]
+write.table(top10each_final, file = "GOenrichment-enrichmentTable-top10-Bonferroni.tsv",sep="\t",quote=FALSE, row.names = FALSE)
+
+
+########################
+# Volcano plot of specific modules
+########################
+
+# if (!require("BiocManager", quietly = TRUE))
+#     install.packages("BiocManager")
+# BiocManager::install("EnhancedVolcano")
+library(EnhancedVolcano)
+library(magrittr)
+
+
+data_go_0 <- data.frame(table.display)
+dim(data_go_0) # 11240    18
+max(data_go_0$FDR) # 0.9994952
+
+# select only turquoise
+data_go <- data_go_0[data_go_0$class=="turquoise",]
+
+rownames(data_go) <- data_go$shortDataSetName
+traitstolabel <- c("detection of chemical stimulus involved in sensory perception","G protein-coupled receptor activity", "olfactory receptor activity","detection of chemical stimulus")
+# may have to log2 enrichmentratio
+
+names(data_go)
+# [1] "class"                            "rank"                            
+# [3] "dataSetID"                        "dataSetName"                     
+# [5] "inGroups"                         "pValue"                          
+# [7] "Bonferroni"                       "FDR"                             
+# [9] "nCommonGenes"                     "fracOfEffectiveClassSize"        
+# [11] "expectedFracOfEffectiveClassSize" "enrichmentRatio"                 
+# [13] "classSize"                        "effectiveClassSize"              
+# [15] "fracOfEffectiveSetSize"           "effectiveSetSize"                
+# [17] "shortdataSetName"                 "overlapGenes"   
+data_go$log2enrichmentRatio <- log10(data_go$enrichmentRatio)
+
+keyvals <- ifelse(
+  data_go$enrichmentRatio > 1, 'turquoise', 'grey')
+names(keyvals)[keyvals == 'turquoise'] <- 'high'
+names(keyvals)[keyvals == 'grey'] <- 'low'
+
+library(EnhancedVolcano)
+tiff(file="Volcano_plot_turquoise.tif", h=25, w=25, res=118, units="cm")
+EnhancedVolcano(data_go, lab = data_go$shortDataSetName, x = "enrichmentRatio", y = "Bonferroni", 
+                xlim = c(1.5, 14), ylim = c(1.5, 17),
+                pointSize = 10, labSize = 6.0, colAlpha = 0.2,
+                cutoffLineType = "blank", cutoffLineCol = "grey", cutoffLineWidth = 0.25,
+                xlab = bquote(~Enrichment~ratio), ylab = bquote(~-Log[10]~Bonferroni~P),
+                selectLab = traitstolabel, drawConnectors = TRUE,  widthConnectors = 1,
+                legend=c("","","",""), legendLabSize=-1, legendIconSize=-1,
+                gridlines.major = FALSE, gridlines.minor = FALSE,
+                colCustom = keyvals,
+                title= NULL, subtitle=NULL, caption=NULL)
+dev.off()
+
+
+# see how many hervs and genes are per module
+
+# head(data)
+# gene_data <- data.frame(
+#   Gene = c("GeneA", "Gene_B", "Gene_C", "Gene_D", "Gene_E", "Gene_F"),
+#   Category = rep(letters[1:3], each = 2)
+# )
+
+gene_data <- data
+colnames(gene_data) <- c("Gene","Category")
+# Calculate the percentage of gene names containing an underscore for each category
+gene_data$HasUnderscore <- grepl("_", gene_data$Gene)
+percentage_by_category <- tapply(gene_data$HasUnderscore, gene_data$Category, function(x) sum(x) / length(x) )
+
+percentage_not_containing <- 1 - percentage_by_category
+
+# convert into table
+rodexampledata <- cbind(data.frame(percentage_by_category), data.frame(percentage_not_containing))
+rodexampledata$category <- row.names(rodexampledata)
+names(rodexampledata) <- c("HERVs","RefSeq genes","Category")
+
+# melt
+library(reshape)
+example.melt <- melt(rodexampledata, id.vars="Category")
+colnames(example.melt) <- c("Category","Genetic feature","value")
+
+# calculate counts
+category_counts <- data.frame(table(gene_data$Category))
+names(category_counts)<- c("Category", "counts")
+
+example.melt_with_counts <- merge(example.melt, category_counts, by="Category")
+example.melt_with_counts$real_counts <- round(example.melt_with_counts$value * example.melt_with_counts$counts )
+# draw plot
+
+library(ggplot2)
+# LABELS DONT WORK
+# png(file="563 percentage of HERVs - names with underscore.png", h=1400 , w=1400, unit="px")
+# ggplot(example.melt_with_counts, aes(x=Category, y=value, fill = variable)) +
+#   theme(text = element_text(size = 50), axis.text.x = element_text(angle = 45, hjust = 1)) + # this size controls all font everywhere. 
+#   geom_bar(position = "fill", stat = "identity",color='black',width=0.9) +
+#   scale_y_continuous(labels = scales::percent) +
+#   geom_text(aes(label = paste0(round(value*100),"%")), 
+#             position = position_stack(vjust = 0.5), size = 5) + # this is the % label
+#   geom_text(data = example.melt_with_counts_unique_counts_per_module, aes(label = paste("", counts)), position =  position_dodge(width = 1), vjust = -0.5, size = 4) + # this is the N label            
+#   labs(title = "Module composition (%)", y = "Percentage", x = "Module")
+# dev.off()
+
+png(file="563 percentage of HERVs - names with underscore.png", h=1400 , w=1400, unit="px")
+ggplot(example.melt_with_counts, aes(Category, value, fill = `Genetic feature`)) +
+   theme_minimal() + theme(panel.border = element_blank() , panel.grid.minor = element_blank()) +
+   scale_fill_manual(values = alpha(c("darkgoldenrod2","blue3"), 0.6)) +
+   geom_col(position = "fill", color = 'black', width = 0.9) +
+   geom_text(aes(label = scales::percent(value, accuracy=1)), 
+   position = position_stack(vjust = 0.5), size = 7) + 
+   annotate('text', x = c(1:17), y = 1.04, size = 10, angle = 45,
+           label = paste('', aggregate(real_counts ~ Category, example.melt_with_counts, sum)$real_counts)) +
+   scale_y_continuous("Percentage", labels = scales::percent, breaks = 0:4/4) +
+   labs(title = "Module composition (%)", x = "Module") +
+   theme(axis.text.x = element_text(angle = 45, hjust = 1), text = element_text(size = 40)) 
+dev.off()
+
+
+
+###############################################
+# create bubble plot with top GO term per module. Thanks to Amalie Couch for providing code skeleton (see https://pubmed.ncbi.nlm.nih.gov/36781081/)
+# get top GO term per module
+top10each_final_top = table.display[table.display$rank %in% 1:1,]
+top10each_final_top <- dplyr::select(top10each_final_top, class,  pValue , Bonferroni, enrichmentRatio, dataSetName)
+top10each_final_top$'-Log10Pvalue' <- -log10(top10each_final_top$pValue)
+
+colnames(top10each_final_top) <- c("Module","P","Bonferroni P","Enrichment ratio","GO term","-log10 P")
+
+# make sure grey is not there
+top10each_final_top <- top10each_final_top[!top10each_final_top$Module=="grey",]
+
+# plot GO terms
+png("top10each_final_top.png", width= 8, height =  6, units = "in", res=300)
+ggplot( top10each_final_top, aes(x=`-log10 P`, y=reorder(`GO term`, `-log10 P`), size = `Enrichment ratio`, fill = `-log10 P`)) +
+        geom_point(shape = 21) + 
+        scale_fill_viridis_c(option = "E", direction = -1) +
+        labs(x = "-log10 P", y= "GO term") +
+        theme_minimal() +
+        theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+        labs(title = "GO terms per module")
+dev.off()
+
+# Plot Modules
+png("top10each_final_top_mods.png", width= 8, height =  6, units = "in", res=300)
+ggplot( top10each_final_top, aes(x=`-log10 P`, y=reorder(`Module`, `-log10 P`), size = `Enrichment ratio`, fill = `-log10 P`)) +
+opts(axis.text.y=theme_text(hjust=0) )+
+        geom_point(shape = 21) + 
+        scale_fill_viridis_c(option = "E", direction = -1) +
+        labs(x = "-log10 P", y= "Module") +
+        theme_minimal() +
+        theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+        labs(title = "GO terms per module")
+dev.off()
+
+
+
+
+
+
+
+
+
+# testing  https://stackoverflow.com/questions/45361904/duplicating-and-modifying-discrete-axis-in-ggplot2#
+top10each_final_top = table.display[table.display$rank %in% 1:1,]
+top10each_final_top <- dplyr::select(top10each_final_top, class,  pValue , Bonferroni, enrichmentRatio, dataSetName)
+top10each_final_top$'-Log10Pvalue' <- -log10(top10each_final_top$pValue)
+
+colnames(top10each_final_top) <- c("Module","P","Bonferroni P","Enrichment ratio","GO term","-log10 P")
+
+# make sure grey is not there
+top10each_final_top <- top10each_final_top[!top10each_final_top$Module=="grey",]
+
+# plot
+png("top10each_final_top.png", width= 8, height =  6, units = "in", res=300)
+ggplot( top10each_final_top, aes(x=`-log10 P`, y=reorder(`GO term`, `-log10 P`), size = `Enrichment ratio`, fill = `-log10 P`)) +
+        geom_point(shape = 21) + 
+        scale_fill_viridis_c(option = "E", direction = -1) +
+        labs(x = "-log10 P", y= "GO term") +
+        theme_minimal() +
+        theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+        labs(title = "GO terms per module")
+dev.off()
+
+
+
+
+
+
+
+
+
+
+
+# # Create sample data
+# df <- data.frame( Module = c("black","blue","brown"), P = c(1.068242e-12, 2.941035e-40, 6.975126e-12), Bonferroni = c(3.915918e-07, 1.078113e-34, 2.556914e-06 ), EnrichmentRatio = c(2.030865, 2.395059, 1.169325), GO_term = c("GO term 1", "GO term 2", "GO term 3"), "neg.log10.P" = c(11.97133, 39.53150, 11.15645) )
+# png("top10each_final_top.png", width= 8, height =  6, units = "in", res=300)
+# ggplot( df, aes(x=`neg.log10.P`, y=reorder(`Module`, `neg.log10.P`), size = `EnrichmentRatio`, fill = `neg.log10.P`)) +
+#         geom_point(shape = 21) + 
+#         scale_fill_viridis_c(option = "E", direction = -1) +
+#         labs(x = "-log10 P", y= "Module") +
+#         theme_minimal() +
+#         theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold")) +
+#         labs(title = "GO terms per module")
+# dev.off()
+
+
+
+
+
+
+#
+# test <- fread("~/test.amalie")
+# test$'-Log10FDR' <- -log10(test$PValue)
+# fun_bubble <- function(x){
+#   x %>%
+#     ggplot(aes(x=`-Log10FDR`, y=reorder(Term, `-Log10FDR`), size = FE, fill = PValue)) +
+#         geom_point(shape = 21)+
+#         scale_fill_viridis_c(option = "E", direction = -1)+
+#         labs(x = "-Log10FDR",
+#              y= "Term",
+#              fill = "PValue",
+#              size = "FE")+
+#         theme_minimal()+
+#         theme(plot.title = element_text(hjust = 0.5, size = 14, face = "bold"))
+# } 
+
+# fun_bubble(test %>% filter(FDR < 0.05)) +
+#   labs(title = "IL-6 Co-Culture MGL Upregulated Pathways")
+# ggsave("mocking.jpeg", width= 8, height =  6, units = "in",bg="white")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+save.image("/scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/wgcna/563 environment_single-network_net_20 v2.RDat")
+
+
+# how many HERVs and genes are int he turquoirse module?
+
+gene_data_turq <- gene_data[ gene_data$Category == "turquoise",]
+library(data.table)
+hervs_in_turq <- gene_data_turq[rownames(gene_data_turq) %like% "_", ]
+nrow (hervs_in_turq) # 3815
+
+# how many are genes.
+genes_in_turq <- gene_data_turq[!rownames(gene_data_turq) %like% "_", ]
+nrow (genes_in_turq) # 1398
+
+# now in magenta
+gene_data_lc <- gene_data[ gene_data$Category == "magenta",]
+hervs_in_lc <- gene_data_lc[rownames(gene_data_lc) %like% "_", ]
+nrow (hervs_in_lc) # 377
+
+# how many are genes.
+genes_in_lc <- gene_data_lc[!rownames(gene_data_lc) %like% "_", ]
+nrow (genes_in_lc) # 433

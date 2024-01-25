@@ -1,0 +1,637 @@
+# Final g1000 genotype files (all samples):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6 (.bim/.bed/.fam)
+
+# population ancestry information
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary.txt
+
+# population colours assignment G1000 (all samples)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/population_colours.txt
+
+# frequency of variants in Eur
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3.frq
+
+# Final g1000 genotype files (EUR only):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3 (.bim/.bed/.fam)
+
+# frequency of variants in Afr
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3.frq
+
+# Final g1000 genotype files (AFR only):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3 (.bim/.bed/.fam)
+
+
+###########################################################################
+# Split CMC cohort into the five major populations using Ollie Pain's genopred Ancestry_identifier.R script. See https://github.com/opain/GenoPred/tree/master/Scripts/Ancestry_identifier
+###########################################################################
+
+srun -p cpu,interruptible_cpu -n 1 --mem=50000 --time 8:00:00  --pty /bin/bash
+# First, prepare input files
+# # Copy IID to FID field, and split target plink files by chromosome. This is required for this script.
+# target CMC samples, all ancestries: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/
+for i in {1..22}; do
+plink --bfile genotypes_9 --chr ${i} --make-bed --out genotypes_9_0.chr${i}
+awk '{print $2 " " $2 " " $3 " " $4 " " $5 " " $6 }' < genotypes_9_0.chr${i}.fam > genotypes_9.chr${i}.fam
+done
+ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9.chr*.bim | wc -l # 22
+# # opt$target_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9.chr"
+
+# # you need reference plink files split by chromosome. Also copy IID to FID column.
+# reference g1000 samples, all samples: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/
+for i in {1..22}; do
+plink --bfile 1000genomes_geno_6 --chr ${i} --make-bed --out 1000genomes_geno_6_0.chr${i}
+awk '{print $2 " " $2 " " $3 " " $4 " " $5 " " $6 }' < 1000genomes_geno_6_0.chr${i}.fam > 1000genomes_geno_6.chr${i}.fam
+done
+ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6.chr*.bim | wc -l # 22
+# opt$ref_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6.chr"
+
+# ## you need a file containing the ancestry specification of all individuals from the reference individuals. Format: 
+# # sample super_pop
+# # HG00096 EUR
+# # HG00097 EUR
+# # HG00099 EUR
+# current file /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary.txt
+awk -F'\t' '{ print $2, $3 }' populations_summary.txt | sed -e '1s/IID/sample/' | sed -e '1s/Pop/super_pop/' | sed -e 's/CEU/EUR/g' > populations_summary_Ollie.txt
+head populations_summary_Ollie.txt
+# opt$pop_data<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary_Ollie.txt"
+
+# opt$pop_data<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/ref_pop_dat.txt"
+# AFR AMR EAS EUR SAS
+# 661 347 504 503 489
+# ## file containing redirection of keep files per ancestry, format: 
+# # AFR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/AFR_samples.keep
+# # AMR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/AMR_samples.keep
+# # EAS /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/EAS_samples.keep
+# # EUR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/EUR_samples.keep
+# # SAS /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/SAS_samples.keep
+# current format: head AFR_samples.keep  
+# HG01879 HG01879
+# HG01880 HG01880
+# HG01882 HG01882
+# HG01883 HG01883
+# Ollie's ref files already would do this for 2504 samples, but let's regenerate these files anyway, just in case. 
+
+# conda env create -f genopred_env.yml
+conda activate genopred
+R
+library(data.table)
+ref <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary_Ollie.txt",stringsAsFactors=F)
+ref_2 <- data.frame(cbind(sample=ref$sample, sample2=ref$sample, super_pop=ref$super_pop))
+table(ref_2$super_pop)
+# AFR AMR EUR EAS SAS
+# 661 347 503 504 489
+ancestries <- c("AFR","AMR","EUR","EAS","SAS")
+for (i in ancestries) {
+# i="AFR"
+  ref_3 <- data.frame()
+  ref_3 <- ref_2[ref_2$super_pop==i,]
+  ref_3$super_pop <- NULL
+  write.table(ref_3, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/",i,"_keep.txt"), col.names=F, row.names=F, quote=F)
+}
+# Now, create a final file that indicates the population followed to the path to that file. Example:
+# AFR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/AFR_samples.keep
+# AMR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/AMR_samples.keep
+# EAS /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/EAS_samples.keep
+# EUR /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/EUR_samples.keep
+# SAS /scratch/prj/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/SAS_samples.keep
+redirector <- data.frame(a=c("AFR","AMR","EUR","EAS","SAS"), b= c("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/AFR_keep.txt","/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/AMR_keep.txt","/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/EUR_keep.txt","/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/EAS_keep.txt","/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/SAS_keep.txt"))
+write.table(redirector, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/ref_super_pop_keep_list_for_Ollies_script.txt"), col.names=F, row.names=F, quote=F)
+# opt$ref_pop_scale <-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/ref_super_pop_keep_list_for_Ollies_script.txt"
+quit("no")
+
+# Now the adapted version of Ollie's script. This was an optparse script, but I changed it to run interactively 
+conda activate genopred
+R
+
+suppressMessages(library("data.table"))
+suppressMessages(library("caret"))
+suppressMessages(library("pROC"))
+suppressMessages(library("verification"))
+suppressMessages(library("ggplot2"))
+suppressMessages(library("cowplot"))
+
+opt<-list()
+# opt$target_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/target/targ.chr"
+# opt$ref_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/ref.chr"
+# opt$output<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/test"
+# opt$pop_data<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/ref_pop_dat.txt"
+# opt$ref_pop_scale <-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/GenoPred/Scripts/Ancestry_identifier/ref/ref_super_pop_keep_list.txt"
+opt$prob_thresh <- "0.9"
+opt$target_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9.chr"
+opt$ref_plink_chr<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6.chr"
+opt$output<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry"
+opt$pop_data<-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary_Ollie.txt"
+opt$ref_pop_scale <-"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/ref_super_pop_keep_list_for_Ollies_script.txt"
+opt$plink<-"plink"
+opt$plink2<-"plink2"
+opt$n_pcs<-"10"
+opt$output_dir<-paste0(dirname(opt$output),'/')
+opt$model_method<-"glmnet"
+system(paste0('mkdir -p ',opt$output_dir))
+
+# generate list of SNPs in target files (split by chr)
+for(i in 1:22){
+		 system(paste0(opt$plink,' --bfile ',opt$target_plink_chr,i,' --threads 1 --write-snplist --out ',opt$output_dir,'target.QC.chr',i))
+     }  
+      
+# now create a master file with all SNP ids, in all chromosomes.
+target_qc_snplist<-NULL
+  for(i in 1:22){
+    target_qc_snplist_i<-fread(paste0(opt$output_dir,'target.QC.chr',i,'.snplist'), header=F)
+    target_qc_snplist<-rbind(target_qc_snplist, target_qc_snplist_i)
+  }
+write.table(target_qc_snplist$V1, paste0(opt$output_dir,'target_QC.snplist'), row.names=F, col.names=F, quote=F)
+
+# remove intermediary files  
+system(paste0('rm ',paste0(opt$output_dir,'target.QC.chr*')))
+
+
+# Merge the per chromosome reference genetic files, retaining only snps present in target
+# To do that, extract intersect with target from the reference files  (QC missed)
+for(i in 1:22){
+  system(paste0(opt$plink,' --bfile ', opt$ref_plink_chr,i,' --make-bed --extract ',opt$output_dir,'target_QC.snplist --out ',opt$output_dir,'ref_intersect_chr',i ))
+}
+
+# Check alleles match between reference and target. This dataset has already been harmonised for this, but this would be an excellent check and fix, so I am keeping the code below.
+ref_bim<-NULL
+for(i in 1:22){
+  ref_bim<-rbind(ref_bim, fread(paste0(opt$output_dir,'ref_intersect_chr',i,'.bim')))
+}
+
+ref_bim<-ref_bim[,c('V1','V2','V4','V5','V6')]
+names(ref_bim)<-c('CHR','SNP','BP','A1','A2')
+
+targ_bim<-NULL
+  for(i in 1:22){
+    targ_bim<-rbind(targ_bim, fread(paste0(opt$target_plink_chr,i,'.bim')))
+}
+
+targ_bim<-targ_bim[,c('V1','V2','V4','V5','V6')]
+names(targ_bim)<-c('CHR','SNP','BP','A1','A2')
+
+# Create IUPAC codes in target data
+targ_bim$IUPAC[targ_bim$A1 == 'A' & targ_bim$A2 =='T' | targ_bim$A1 == 'T' & targ_bim$A2 =='A']<-'W'
+targ_bim$IUPAC[targ_bim$A1 == 'C' & targ_bim$A2 =='G' | targ_bim$A1 == 'G' & targ_bim$A2 =='C']<-'S'
+targ_bim$IUPAC[targ_bim$A1 == 'A' & targ_bim$A2 =='G' | targ_bim$A1 == 'G' & targ_bim$A2 =='A']<-'R'
+targ_bim$IUPAC[targ_bim$A1 == 'C' & targ_bim$A2 =='T' | targ_bim$A1 == 'T' & targ_bim$A2 =='C']<-'Y'
+targ_bim$IUPAC[targ_bim$A1 == 'G' & targ_bim$A2 =='T' | targ_bim$A1 == 'T' & targ_bim$A2 =='G']<-'K'
+targ_bim$IUPAC[targ_bim$A1 == 'A' & targ_bim$A2 =='C' | targ_bim$A1 == 'C' & targ_bim$A2 =='A']<-'M'
+targ_bim$SNP_IUPAC<-paste0(targ_bim$SNP,':',targ_bim$IUPAC)
+
+# Create IUPAC codes in ref data
+ref_bim$IUPAC[ref_bim$A1 == 'A' & ref_bim$A2 =='T' | ref_bim$A1 == 'T' & ref_bim$A2 =='A']<-'W'
+ref_bim$IUPAC[ref_bim$A1 == 'C' & ref_bim$A2 =='G' | ref_bim$A1 == 'G' & ref_bim$A2 =='C']<-'S'
+ref_bim$IUPAC[ref_bim$A1 == 'A' & ref_bim$A2 =='G' | ref_bim$A1 == 'G' & ref_bim$A2 =='A']<-'R'
+ref_bim$IUPAC[ref_bim$A1 == 'C' & ref_bim$A2 =='T' | ref_bim$A1 == 'T' & ref_bim$A2 =='C']<-'Y'
+ref_bim$IUPAC[ref_bim$A1 == 'G' & ref_bim$A2 =='T' | ref_bim$A1 == 'T' & ref_bim$A2 =='G']<-'K'
+ref_bim$IUPAC[ref_bim$A1 == 'A' & ref_bim$A2 =='C' | ref_bim$A1 == 'C' & ref_bim$A2 =='A']<-'M'
+ref_bim$SNP_IUPAC<-paste0(ref_bim$SNP,':',ref_bim$IUPAC)
+
+# Merge target and reference based on SNP id
+ref_target<-merge(ref_bim, targ_bim, by='SNP')
+
+# Identify SNPs for which alleles need to be flipped
+flip_tmp<-ref_target[(ref_target$IUPAC.x == 'R' & ref_target$IUPAC.y == 'Y' | 
+                        ref_target$IUPAC.x == 'Y' & ref_target$IUPAC.y == 'R' | 
+                        ref_target$IUPAC.x == 'K' & ref_target$IUPAC.y == 'M' |
+                        ref_target$IUPAC.x == 'M' & ref_target$IUPAC.y == 'K'),]
+
+# Idenitfy SNPs which match the reference alleles (in my dataset, it's been already harmonised, so flip_tmp is empty, and incl contains all SNPs that match between ref and target)
+incl<-ref_target[ ref_target$IUPAC.x == 'R' & ref_target$IUPAC.y == 'R' | 
+                    ref_target$IUPAC.x == 'Y' & ref_target$IUPAC.y == 'Y' | 
+                    ref_target$IUPAC.x == 'K' & ref_target$IUPAC.y == 'K' |
+                    ref_target$IUPAC.x == 'M' & ref_target$IUPAC.y == 'M' ]
+
+# If a SNP that needs to be flipped has a duplicate that is on the correct strand, remove it.
+flip<-flip_tmp[!(flip_tmp$SNP %in% incl$SNP)]
+
+# Combine SNPs that match and those that need to be flipped.
+incl<-rbind(incl,flip)
+if(dim(flip)[1] > 0){
+  write.table(flip$SNP, paste0(opt$output_dir,'ref_flip.snplist'), col.names=F, row.names=F, quote=F)
+}
+write.table(incl$SNP, paste0(opt$output_dir,'ref_allele_match.snplist'), col.names=F, row.names=F, quote=F)
+
+# Create merge list
+ref_merge_list<-paste0(opt$output_dir,'ref_intersect_chr',1:22)
+
+write.table(ref_merge_list, paste0(opt$output_dir,'ref_mergelist.txt'), row.names=F, col.names=F, quote=F)
+
+# Merge
+if(dim(flip)[1] > 0){
+  system(paste0(opt$plink,' --merge-list ',opt$output_dir,'ref_mergelist.txt --extract ',opt$output_dir,'ref_allele_match.snplist --flip ',opt$output_dir,'ref_flip.snplist --threads 1 --make-bed --out ',opt$output_dir,'ref_merge' ))
+} else {
+  system(paste0(opt$plink,' --merge-list ',opt$output_dir,'ref_mergelist.txt --extract ',opt$output_dir,'ref_allele_match.snplist --threads 1 --make-bed --out ',opt$output_dir,'ref_merge'))
+}
+
+# Delete temporary per chromosome reference files
+system(paste0('rm ',opt$output_dir,'ref_intersect_chr*'))
+if(dim(flip)[1] > 0){
+  system(paste0('rm ',opt$output_dir,'ref_flip.snplist'))
+}
+system(paste0('rm ',opt$output_dir,'ref_allele_match.snplist'))
+
+# Create SNP list for LD pruning in reference files / Remove regions of long range LD which can confound estimates of ancestry estimates (REF: PMC2443852)
+# Read in the bim file from reference
+ref_bim<-data.frame(fread(paste0(opt$output_dir,'ref_merge.bim')))
+
+# Create file removing these regions. (hg19) # same as https://genome.sph.umich.edu/wiki/Regions_of_high_linkage_disequilibrium_(LD)
+long_ld_exclude<-ref_bim$V2[ (ref_bim$V1 == 1 & ref_bim$V4 >= 48e6 & ref_bim$V4 <= 52e6) |
+                                  (ref_bim$V1 == 2 & ref_bim$V4 >= 86e6 & ref_bim$V4 <= 100.5e6) |
+                                  (ref_bim$V1 == 2 & ref_bim$V4 >= 134.5e6 & ref_bim$V4 <= 138e6) |
+                                  (ref_bim$V1 == 2 & ref_bim$V4 >= 183e6 & ref_bim$V4 <= 190e6) |
+                                  (ref_bim$V1 == 3 & ref_bim$V4 >= 47.5e6 & ref_bim$V4 <= 50e6) |
+                                  (ref_bim$V1 == 3 & ref_bim$V4 >= 83.5e6 & ref_bim$V4 <= 87e6) |
+                                  (ref_bim$V1 == 3 & ref_bim$V4 >= 89e6 & ref_bim$V4 <= 97.5e6) |
+                                  (ref_bim$V1 == 5 & ref_bim$V4 >= 44.5e6 & ref_bim$V4 <= 50.5e6) |
+                                  (ref_bim$V1 == 5 & ref_bim$V4 >= 98e6 & ref_bim$V4 <= 100.5e6) |
+                                  (ref_bim$V1 == 5 & ref_bim$V4 >= 129e6 & ref_bim$V4 <= 132e6) |
+                                  (ref_bim$V1 == 5 & ref_bim$V4 >= 135.5e6 & ref_bim$V4 <= 138.5e6) |
+                                  (ref_bim$V1 == 6 & ref_bim$V4 >= 25.5e6 & ref_bim$V4 <= 33.5e6) |
+                                  (ref_bim$V1 == 6 & ref_bim$V4 >= 57e6 & ref_bim$V4 <= 64e6) |
+                                  (ref_bim$V1 == 6 & ref_bim$V4 >= 140e6 & ref_bim$V4 <= 142.5e6) |
+                                  (ref_bim$V1 == 7 & ref_bim$V4 >= 55e6 & ref_bim$V4 <= 66e6) |
+                                  (ref_bim$V1 == 8 & ref_bim$V4 >= 8e6 & ref_bim$V4 <= 12e6) |
+                                  (ref_bim$V1 == 8 & ref_bim$V4 >= 43e6 & ref_bim$V4 <= 50e6) |
+                                  (ref_bim$V1 == 8 & ref_bim$V4 >= 112e6 & ref_bim$V4 <= 115e6) |
+                                  (ref_bim$V1 == 10 & ref_bim$V4 >= 37e6 & ref_bim$V4 <= 43e6) |
+                                  (ref_bim$V1 == 11 & ref_bim$V4 >= 46e6 & ref_bim$V4 <= 57e6) |
+                                  (ref_bim$V1 == 11 & ref_bim$V4 >= 87.5e6 & ref_bim$V4 <= 90.5e6) |
+                                  (ref_bim$V1 == 12 & ref_bim$V4 >= 33e6 & ref_bim$V4 <= 40e6) |
+                                  (ref_bim$V1 == 12 & ref_bim$V4 >= 109.5e6 & ref_bim$V4 <= 112e6) |
+                                  (ref_bim$V1 == 20 & ref_bim$V4 >= 32e6 & ref_bim$V4 <= 34.5e6)]
+
+write.table(long_ld_exclude, paste0(opt$output_dir,'long_ld.exclude'), col.names=F, row.names=F, quote=F)
+  
+# Calculate PCs in the reference sample for scaling the target sample factor scores.
+# Identify LD independent SNPs.
+system(paste0(opt$plink,' --bfile ',opt$output_dir,'ref_merge --threads 1 --exclude ',opt$output_dir,'long_ld.exclude --indep-pairwise 1000 5 0.2 --out ',opt$output_dir,'ref_merge '))
+
+# Extract LD independent SNPs
+system(paste0(opt$plink,' --bfile ',opt$output_dir,'ref_merge --threads 1 --extract ',opt$output_dir,'ref_merge.prune.in --make-bed --out ',opt$output_dir,'ref_merge_pruned '))
+
+# Calculate SNP weights
+system(paste0(opt$plink2,' --bfile ',opt$output_dir,'ref_merge_pruned --threads 1 --pca ',opt$n_pcs,' biallelic-var-wts  --out ',opt$output_dir,'ref_merge_pruned '))
+
+# Calculate PCs in the reference
+system(paste0(opt$plink2,' --bfile ',opt$output_dir,'ref_merge_pruned --threads 1 --score ',opt$output_dir,'ref_merge_pruned.eigenvec.var header-read 2 3 --score-col-nums 5-',as.numeric(opt$n_pcs)+4,' --out ',opt$output_dir,'ref_merge_pruned_score '))
+
+# Read in reference PC scores
+PCs_ref<-data.frame(fread(paste0(opt$output_dir,'ref_merge_pruned_score.sscore')))
+PCs_ref<-PCs_ref[,c(1:2,5:dim(PCs_ref)[2])]
+names(PCs_ref)<-c('FID','IID',paste0('PC',1:as.numeric(opt$n_pcs)))
+
+fwrite(PCs_ref, paste0(opt$output,'.eigenvec'), sep=' ')
+
+# Scale across all individuals
+PCs_ref_centre_scale<-data.frame(PC=names(PCs_ref[-1:-2]),
+							  Mean=sapply(PCs_ref[,-1:-2], function(x) mean(x)),
+							  SD=sapply(PCs_ref[,-1:-2], function(x) sd(x)),
+							  row.names=seq(1:as.numeric(opt$n_pcs)))
+
+fwrite(PCs_ref_centre_scale, paste0(opt$output,'.scale'), sep=' ')
+
+rm(PCs_ref_centre_scale)
+gc()
+
+# Calculate the mean and sd of scores for each population specified in pop_scale
+pop_keep_files<-read.table(opt$ref_pop_scale, header=F, stringsAsFactors=F) 
+
+for(k in 1:dim(pop_keep_files)[1]){
+  	pop<-pop_keep_files$V1[k]
+  	keep<-fread(pop_keep_files$V2[k], header=F)
+ 	PCs_ref_keep<-PCs_ref[(PCs_ref$FID %in% keep$V1),] # for some reason, this is selecting 656 AFR samples, whereas it should be 661! Oh, it's ok - some were removed from the genotype files during filtering!
+
+    PCs_ref_centre_scale<-data.frame(PC=names(PCs_ref_keep[-1:-2]),
+    								  Mean=sapply(PCs_ref_keep[,-1:-2], function(x) mean(x)),
+    								  SD=sapply(PCs_ref_keep[,-1:-2], function(x) sd(x)),
+    								  row.names=seq(1:opt$n_pcs))
+
+  	fwrite(PCs_ref_centre_scale, paste0(opt$output,'.',pop,'.scale'), sep=' ')
+	
+	rm(PCs_ref_centre_scale)
+	gc()
+	}
+
+# Create model predicting ref_pop groups
+# Read in whole sample reference scale file
+PCs_ref_centre_scale<-fread(paste0(opt$output,'.scale'))
+
+# Scale the reference PCs per individual, by the mean of each PC.
+PCs_ref_scaled<-PCs_ref
+for(i in 1:dim(PCs_ref_centre_scale)[1]){
+  PCs_ref_scaled[[paste0('PC',i)]]<-PCs_ref[[paste0('PC',i)]]-PCs_ref_centre_scale$Mean[PCs_ref_centre_scale$PC == paste0('PC',i)]
+  PCs_ref_scaled[[paste0('PC',i)]]<-PCs_ref_scaled[[paste0('PC',i)]]/PCs_ref_centre_scale$SD[PCs_ref_centre_scale$PC == paste0('PC',i)]
+}
+
+# Label individuals with ref_pop groups
+pop<-NULL
+for(i in 1:dim(pop_keep_files)[1]){
+  keep<-fread(pop_keep_files$V2[i], header=F)
+  keep$pop<-pop_keep_files$V1[i]
+  pop<-rbind(pop,keep)
+}
+names(pop)<-c('FID','IID','pop')
+  # table(pop$pop)
+  # AFR AMR EAS EUR SAS
+  # 661 347 504 503 489 = 2504 (still havent removed the ones that didnt survive filtering...)
+PCs_ref_scaled_pop<-merge(PCs_ref_scaled,pop, by=c('FID','IID'))
+dim(PCs_ref_scaled_pop) # 2499 ...
+rm(PCs_ref_scaled)
+gc()
+
+# Build model #  there may be some library dependencies that have not been installed yet, just install them and the errors will disappear. 
+model <- train(y=as.factor(PCs_ref_scaled_pop$pop), x=PCs_ref_scaled_pop[grepl('PC',names(PCs_ref_scaled_pop))], method=opt$model_method, metric='logLoss', trControl=trainControl(method="cv", number=5, classProbs= TRUE, savePredictions = 'final', summaryFunction = multiClassSummary))
+
+# Save performance information
+sink(file = paste(opt$output,'.pop_model_prediction_details.txt',sep=''), append = F)
+print(model)
+obs_pre_tab<-table(model$pred$obs, model$pred$pred)
+dimnames(obs_pre_tab)<-list(paste('obs',dimnames(obs_pre_tab)[[1]]),paste('pred',dimnames(obs_pre_tab)[[2]]))
+
+# Show confusion matrix before and after applying probability threshold
+cat('Confusion matrix without threshold:\n')
+print(obs_pre_tab)
+
+model$pred$max_prob<-apply(model$pred[,unique(PCs_ref_scaled_pop$pop)], 1, max)
+model$pred<-model$pred[model$pred$max_prob > opt$prob_thresh,]
+
+obs_pre_tab_thresh<-table(model$pred$obs, model$pred$pred)
+dimnames(obs_pre_tab_thresh)<-list(paste('obs',dimnames(obs_pre_tab_thresh)[[1]]),paste('pred',dimnames(obs_pre_tab_thresh)[[2]]))
+
+cat(paste0('Confusion matrix with ',opt$prob_thresh,' threshold:\n'))
+print(obs_pre_tab_thresh) # changed a little bit.
+sink()
+
+saveRDS(model$finalModel, paste0(opt$output,'.pop_model.rds'))
+
+# Rename files and remove garbage
+system(paste0('mv ',opt$output_dir,'ref_merge_pruned.eigenvec.var ',opt$output,'.eigenvec.var'))
+system(paste0('rm ',opt$output_dir,'ref_merge*'))
+system(paste0('rm ',opt$output_dir,'long_ld.exclude'))
+system(paste0('rm ',opt$output_dir,'target_QC.snplist'))
+
+# Calculate PCs in target sample, based on SNPs used to calculate PCs in reference.
+# identify independent variants in ref sample:
+system(paste0('cut -f 2 ',opt$output,'.eigenvec.var | tail -n +2 > ',opt$output_dir,'score_file.snplist'))# 262025 rows. (independent vars...)
+
+# and create plink files that contain only those in target
+for(i in 1:22){
+      system(paste0(opt$plink2, ' --bfile ',opt$target_plink_chr,i,' --extract ',opt$output_dir,'score_file.snplist --score ',opt$output,'.eigenvec.var header-read 2 3 no-mean-imputation --threads 1 --score-col-nums 5-',as.numeric(opt$n_pcs)+4,' --out ',opt$output_dir,'profiles.chr',i))
+}
+system(paste0('rm ',opt$output_dir,'score_file.snplist'))
+
+# Add up the scores across chromosomes
+scores<-fread(cmd=paste0('cut -f 1-2 ',opt$output_dir,'profiles.chr22.sscore'))
+names(scores)<-c('FID','IID')
+
+var_list<-fread(paste0(opt$output,'.eigenvec.var'))
+nsnp_all<-0
+for(i in 1:22){
+  profile<-data.frame(fread(paste0(opt$output_dir,'profiles.chr',i,'.sscore')))
+  profile<-as.matrix(profile[,grepl('PC',names(profile))])
+  bim<-fread(paste0(opt$target_plink_chr,i,'.bim'))
+  nsnp<-sum(bim$V2 %in% var_list$ID)
+  nsnp_all<-nsnp_all+nsnp
+  profile<-profile*nsnp
+  if(i == 1){
+    profile_all<-profile
+  } else {
+    profile_all<-profile_all+profile	
+  }
+print(i)
+}
+
+profile_all<-profile_all/nsnp_all
+profile_all<-data.table(profile_all)
+names(profile_all)<-paste0('PC',1:as.numeric(opt$n_pcs))
+scores<-cbind(scores, profile_all)
+
+targ_PCs<-data.frame(scores)
+
+# Clean up temporary files and other garbage
+rm(scores,profile_all,var_list,nsnp_all)
+gc()
+system(paste0('rm -f ',opt$output_dir,'profiles*'))
+
+# Create plot PC scores of target sample compared to the reference
+# Read in population data
+pop_data<-data.frame(fread(opt$pop_data))
+names(pop_data)[1]<-'IID'
+pop_data$FID<-pop_data$IID
+
+# Read in reference sample PCs
+ref_PCs<-data.frame(fread(paste0(opt$output,'.eigenvec')))
+ref_PCs<-merge(ref_PCs, pop_data, by=c('FID','IID'))
+
+# Insert pop_data columns into target PCs
+new_cols<-names(ref_PCs[!grepl('PC|ID', names(ref_PCs))])
+new_cols_2<-data.frame(matrix(rep('Target',length(new_cols)),ncol=length(new_cols)))
+names(new_cols_2)<-names(ref_PCs[!grepl('PC|ID', names(ref_PCs))])
+targ_PCs<-cbind(targ_PCs,new_cols_2)
+
+# Combine the two sets
+ref_PCs_targ_PCs<-rbind(ref_PCs,targ_PCs)
+rm(ref_PCs)
+gc()
+
+Label_groups<-names(ref_PCs_targ_PCs[!grepl('PC|IID|FID',names(ref_PCs_targ_PCs))])
+
+# Show PC plots of the samples.
+for(i in Label_groups){
+PC_1_2<-ggplot(ref_PCs_targ_PCs[ref_PCs_targ_PCs[[i]] != 'Target',], aes(x=PC1,y=PC2, colour=get(i))) + 
+  geom_point() + 
+	geom_point(data=ref_PCs_targ_PCs[ref_PCs_targ_PCs[[i]] == 'Target',], aes(x=PC1,y=PC2), colour='black', shape=21) + 
+  ggtitle("PCs 1 and 2") +
+	labs(colour="")
+PC_3_4<-ggplot(ref_PCs_targ_PCs[ref_PCs_targ_PCs[[i]] != 'Target',], aes(x=PC3,y=PC4, colour=get(i))) + 
+  geom_point() + 
+	geom_point(data=ref_PCs_targ_PCs[ref_PCs_targ_PCs[[i]] == 'Target',], aes(x=PC3,y=PC4), colour='black', shape=21) + 
+  ggtitle("PCs 3 and 4") +
+	labs(colour="")
+png(paste0(opt$output,'.PCs_plot_',i,'.png'), units='px', res=300, width=4000, height=2500)
+print(plot_grid(PC_1_2,PC_3_4))
+dev.off()
+rm(PC_1_2,PC_3_4)
+gc()
+print(i)
+}
+
+# Estimate probability of outcomes in model
+# Read in the reference scale file
+pop_model_scale<-fread(paste0(opt$output,'.scale'))
+
+# Scale the target PCs # RD: target PC - reference scaled PC, divided by the standard deviation of the PCs in the reference pop. https://www.listendata.com/2017/04/how-to-standardize-variable-in-regression.html#:~:text=Mathematically%2C%20scaled%20variable%20would%20be%20calculated%20by%20subtracting%20mean%20of%20the%20original%20variable%20from%20raw%20vale%20and%20then%20divide%20it%20by%20standard%20deviation%20of%20the%20original%20variable.
+targ_PCs_scaled<-targ_PCs
+for(i in 1:dim(pop_model_scale)[1]){
+	targ_PCs_scaled[[paste0('PC',i)]]<-targ_PCs[[paste0('PC',i)]]-pop_model_scale$Mean[pop_model_scale$PC == paste0('PC',i)]
+	targ_PCs_scaled[[paste0('PC',i)]]<-targ_PCs_scaled[[paste0('PC',i)]]/pop_model_scale$SD[pop_model_scale$PC == paste0('PC',i)]
+}
+
+# Read in model
+pop_model<-readRDS(paste0(opt$output,'.pop_model.rds'))
+pop_model_pred<-predict(object = pop_model, newx = data.matrix(targ_PCs_scaled[grepl('PC',names(targ_PCs_scaled))]), type = "response", s=pop_model$lambdaOpt)
+pop_model_pred<-as.data.frame.table(pop_model_pred)
+pop_model_pred<-data.table(	FID=targ_PCs_scaled$FID,
+														IID=targ_PCs_scaled$IID,
+														pop=as.character(pop_model_pred$Var2),
+														prob=round(pop_model_pred$Freq,3))
+		
+pop_model_pred<-dcast.data.table(pop_model_pred, formula=FID + IID~pop, value.var = "prob")
+
+fwrite(pop_model_pred, paste0(opt$output,'.model_pred'), sep='\t')
+
+# Create keep files based on the results
+if(!is.na(opt$prob_thresh)){
+  pop_model_pred$max_prob<-apply(pop_model_pred[,-1:-2], 1, max)
+  pop_model_pred<-pop_model_pred[pop_model_pred$max_prob > opt$prob_thresh,]
+  pop_model_pred$max_prob<-NULL
+}
+
+N_group<-NULL
+for(i in names(pop_model_pred[,-1:-2])){
+	tmp_keep<-pop_model_pred[apply(pop_model_pred[,-1:-2], 1, function(x) x[i] == max(x)),1:2]
+	N_group<-rbind(N_group, data.frame(Group=i, N=dim(tmp_keep)[1]))
+	fwrite(tmp_keep, paste0(opt$output,'.model_pred.',i,'.keep'), sep=' ', col.names=F)
+}
+
+rm(targ_PCs_scaled,pop_model_pred)
+gc()
+
+cat('N per group based on model:\n')
+print(N_group) # BANG! 
+#   Group   N # this is what we are using - 90% confidence!
+# 1   AFR 229
+# 2   AMR  31
+# 3   EAS   5
+# 4   EUR 563
+# 5   SAS   3
+ 
+# For the record: 
+#   Group   N # 95% confidence
+# 1   AFR 222
+# 2   AMR  26
+# 3   EAS   5
+# 4   EUR 482
+# 5   SAS   3
+
+system(" wc -l ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred*.keep")
+# 831 samples assigned to an ancestry with 90% probability, versus 738 with 90% (out of 891). I think the majority of non-assigned ones are probably AMR, as they are much more spread in the PC plots.
+
+system("wc -l /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_9.fam")
+# 891 initial samples
+
+quit("no")
+
+# Old comments:
+#### Previously I added probability of 0.5. 
+# (genopred) k1642468@erc-hpc-comp189:~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check$ wc -l split_by_ancestry.*.keep
+#   239 split_by_ancestry.model_pred.AFR.keep
+#    39 split_by_ancestry.model_pred.AMR.keep
+#     5 split_by_ancestry.model_pred.EAS.keep
+#   603 split_by_ancestry.model_pred.EUR.keep
+#     3 split_by_ancestry.model_pred.SAS.keep
+
+# Keep files if using the 3 SD method (does not work.. particularly for AMR samples, which get really inflated) 
+#   192 split_by_ancestry.AFR.keep
+#   638 split_by_ancestry.AMR.keep
+#     4 split_by_ancestry.EAS.keep
+#   486 split_by_ancestry.EUR.keep
+#     3 split_by_ancestry.SAS.keep
+
+################################## </end of Ollie's script>
+
+# Extract individuals from AFR and EUR ancestry, and run additional QC steps.
+# EUR first
+conda activate ldsc_R
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/
+awk '{print "0" "\t" $2}' ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.EUR.keep > ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.EUR.keep_2
+plink --bfile genotypes_9 --keep ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.EUR.keep_2 --make-bed --out genotypes_EUR_10
+
+plink --bfile genotypes_EUR_10 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_EUR_11
+plink --bfile genotypes_EUR_11 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-10 include-nonctrl --make-bed --out genotypes_EUR_12
+
+# Calculate principal components for inclusion in expression data analysis
+plink --bfile genotypes_EUR_12 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_EUR_12.indepSNP
+plink --bfile genotypes_EUR_12 --extract genotypes_EUR_12.indepSNP.prune.in --pca --out genotypes_EUR_12
+
+# # Sample names (563 individuals)
+awk '{print $1 "\t" $2}' < /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_EUR_genotype_IDs_plink_style
+awk '{print $2}' /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_genotype_IDs
+
+# AFR samples now
+awk '{print "0" "\t" $2}' ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.AFR.keep > ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.AFR.keep_2
+plink --bfile genotypes_9 --keep ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/split_by_ancestry.model_pred.AFR.keep_2 --make-bed --out genotypes_AFR_10
+
+plink --bfile genotypes_AFR_10 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_AFR_11
+plink --bfile genotypes_AFR_11 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-10 include-nonctrl --make-bed --out genotypes_AFR_12
+
+# Calculate principal components for inclusion in expression data analysis
+plink --bfile genotypes_AFR_12 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_AFR_12.indepSNP
+plink --bfile genotypes_AFR_12 --extract genotypes_AFR_12.indepSNP.prune.in --pca --out genotypes_AFR_12
+
+# # Sample names (229 individuals)
+awk '{print $1 "\t" $2}' < /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_AFR_genotype_IDs_plink_style
+awk '{print $2}' /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_genotype_IDs
+
+###########################################
+
+# # Generating final set of files: CONTROLS only, per major ancestries in cohort! Column 6 = 1 in fam files means individual is unaffected control.
+# EUR
+awk '$6 == "1" {print $1 "\t" $2}' < genotypes_EUR_12.fam > genotypes_EUR_12_controls_only 
+wc -l genotypes_EUR_12_controls_only # 242 individuals
+
+plink --bfile genotypes_EUR_12 --keep genotypes_EUR_12_controls_only --make-bed --out genotypes_EUR_12_controls_only_0
+plink --bfile genotypes_EUR_12_controls_only_0 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_EUR_12_controls_only_1
+plink --bfile genotypes_EUR_12_controls_only_1 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_EUR_12_controls_only_2
+
+# Calculate principal components for inclusion in expression data analysis
+plink --bfile genotypes_EUR_12_controls_only_2 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_EUR_12_controls_only_2.indepSNP
+plink --bfile genotypes_EUR_12_controls_only_2 --extract genotypes_EUR_12_controls_only_2.indepSNP.prune.in --pca --out genotypes_EUR_12_controls_only_2
+
+# # Sample names (242 individuals)
+awk '{print $1 "\t" $2}' < /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs_plink_style
+awk '{print $2}' /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs
+
+# AFR contros only
+awk '$6 == "1" {print $1 "\t" $2}' < genotypes_AFR_12.fam > genotypes_AFR_12_controls_only 
+wc -l genotypes_AFR_12_controls_only # 139 individuals
+
+plink --bfile genotypes_AFR_12 --keep genotypes_AFR_12_controls_only --make-bed --out genotypes_AFR_12_controls_only_0
+plink --bfile genotypes_AFR_12_controls_only_0 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_AFR_12_controls_only_1
+plink --bfile genotypes_AFR_12_controls_only_1 --geno 0.05 --mind 0.05 --maf 0.05 --hwe 1e-6 --make-bed --out genotypes_AFR_12_controls_only_2
+
+# Calculate principal components for inclusion in expression data analysis
+plink --bfile genotypes_AFR_12_controls_only_2 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out genotypes_AFR_12_controls_only_2.indepSNP
+plink --bfile genotypes_AFR_12_controls_only_2 --extract genotypes_AFR_12_controls_only_2.indepSNP.prune.in --pca --out genotypes_AFR_12_controls_only_2
+
+# # Sample names (139 individuals)
+awk '{print $1 "\t" $2}' < /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs_plink_style
+awk '{print $2}' /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2.fam > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs
+
+
+# Final files:
+# # post-processed, genotype files of EUR individuals, cases and controls (563 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_EUR_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_563_genotype_IDs
+
+# # post-processed, genotype files of AFR individuals, cases and controls (229 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_AFR_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_229_genotype_IDs
+
+# # post-processed, genotype files of EUR individuals, controls only (242 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12_controls_only_2.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_242_EUR_controls_only_genotype_IDs
+
+# # post-processed, genotype files of AFR individuals, controls only (139 individuals):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2 (.bed/.bim/.fam)
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2.eigenvec
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs_plink_style
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/individuals_139_AFR_controls_only_genotype_IDs

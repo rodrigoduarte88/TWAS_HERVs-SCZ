@@ -1,0 +1,433 @@
+######################### 
+# Create database for rsIDs from dbsnp151
+#########################
+conda activate ldsc_R # see environment details in home dir. It's the ldsc environment requirements plus r-base and some other R libraries. 
+R # R>
+library(data.table) 
+library(dplyr) 		
+setDTthreads(threads=16)
+dbsnp_0 <- fread("https://hgdownload.cse.ucsc.edu/goldenPath/hg19/database/snp151Common.txt.gz", h=F, stringsAsFactors=F)
+dbsnp <- dbsnp_0
+colnames(dbsnp) <- c("bin","chrom","chromStart","chromEnd","name","score","strand","refNCBI","refUCSC","observed","molType","class","valid","avHet","avHetSE","func","locType","weight","exceptions","submitterCount","submitters","alleleFreqCount","alleles","alleleNs","alleleFreqs","bitfields") # label columns #  extracted from: http://genome.cse.ucsc.edu/cgi-bin/hgTables?db=hg19&hgta_group=varRep&hgta_track=snp151Common&hgta_table=snp151Common&hgta_doSchema=describe+table+schema
+
+
+# select only single-nucleotide variants
+dbsnp <- dbsnp[dbsnp$class=="single",] # select SNPs
+dbsnp <- dbsnp[dbsnp$alleleFreqCount==2,] # select only those that have 2 allele posibilities
+dbsnp2 <- select(dbsnp, chrom, chromEnd, name, strand, refUCSC, observed, alleles, alleleFreqs)
+
+# note that some still have "odd" matches
+# chrom chromEnd      name 			strand refUCSC observed alleles alleleFreqs X1 X2       X1       X2
+# chr1    11008 		rs575272151      +       C      C/T    C,G, 0.911941,0.088059,  C  G 0.911941 0.088059
+# in the dbsnp page, it says: "observed" is "The sequences of the observed alleles from rs-fasta files", and that "alleles" are the "observed alleles for which frequency data are available"
+
+# Let's break the "alleles" and "alleleFreqs" fields
+dbsnp2_alleles <- data.frame(do.call('rbind', strsplit(as.character(dbsnp2$alleles),',',fixed=TRUE)))
+dbsnp2_alleleFreqs <- data.frame(do.call('rbind', strsplit(as.character(dbsnp2$alleleFreqs),',',fixed=TRUE)))
+
+dbsnp2_alleles$X1 <- as.character(dbsnp2_alleles$X1)
+dbsnp2_alleles$X2 <- as.character(dbsnp2_alleles$X2)
+
+dbsnp2_alleleFreqs$X1 <- as.numeric(as.character((dbsnp2_alleleFreqs$X1)))
+dbsnp2_alleleFreqs$X2 <- as.numeric(as.character((dbsnp2_alleleFreqs$X2)))
+
+dbsnp3 <- cbind(dbsnp2, dbsnp2_alleles, dbsnp2_alleleFreqs)
+
+colnames(dbsnp3) <- c("chrom","chromEnd","name","strand","refUCSC","observed","alleles","alleleFreqs", "A1", "A2", "Frq.A1","Frq.A2")
+dbsnp3<- select(dbsnp3,"chrom","chromEnd","name","strand","A1", "A2", "Frq.A1","Frq.A2")
+
+# select only SNPs
+dbsnp3 <- dbsnp3[ (dbsnp3$A1=="A" | dbsnp3$A1=="T" | dbsnp3$A1=="C" | dbsnp3$A1=="G") & (dbsnp3$A2=="A" | dbsnp3$A2=="T" | dbsnp3$A2=="C" | dbsnp3$A2=="G") , ]
+dim(dbsnp3)
+
+# select only non-ambiguous variants
+dbsnp3 <- dbsnp3[ !(dbsnp3$A1=="A" & dbsnp3$A2=="T" | dbsnp3$A1=="T" & dbsnp3$A2=="A" | dbsnp3$A1=="C" & dbsnp3$A2=="G" | dbsnp3$A1=="G" & dbsnp3$A2=="C") , ]
+dim(dbsnp3)
+
+# select only variants in chr 1-22, X, Y (there are many in scaffolds)
+dbsnp3$chrom <- gsub("chr", "", dbsnp3$chrom)
+dbsnp4 <- dbsnp3%>% filter(chrom %in%  c(as.character(1:22),'X','Y')) 
+
+# # remove very low frequency variants # will do this later, when we obtain frequency of variants in Europeans.
+# dbsnp4 <- dbsnp4[(dbsnp4$Frq.A1>=0.001 & dbsnp4$Frq.A1<=0.999),]
+# dbsnp4 <- dbsnp4[(dbsnp4$Frq.A2>=0.001 & dbsnp4$Frq.A2<=0.999),]
+
+# Remove ANY duplicated variants by SNP id
+dbsnp5 <- dbsnp4[!(duplicated(dbsnp4$name) | duplicated(dbsnp4$name, fromLast = TRUE)), ]
+
+# Remove ANY duplicated variants by chr_pos 
+dbsnp5$CHRBP_hg19 <- paste(dbsnp5$chrom, dbsnp5$chromEnd, sep="_")   
+dbsnp6 <- dbsnp5[!(duplicated(dbsnp5$CHRBP_hg19) | duplicated(dbsnp5$CHRBP_hg19, fromLast = TRUE)), ]
+
+# prepare for saving
+colnames(dbsnp6) <- c("CHR_dbsnp","BP_dbsnp","RSID_dbsnp","STRAND_dbsnp","A1_dbsnp","A2_dbsnp", "FRQ.A1_dbsnp","FRQ.A2_dbsnp","CHRBP_hg19")
+
+# Add the reverse-complement of each allele (will make it easier to make sure you're matching A1/A2 from another file later on - when we want to match rsid only if it matches both A1/A2 from this reference)
+dbsnp6$A1_dbsnp_rc <- ifelse(dbsnp6$A1_dbsnp=="A", "T", 
+						ifelse(dbsnp6$A1_dbsnp=="T", "A",  
+							ifelse(dbsnp6$A1_dbsnp=="G", "C", 
+								ifelse(dbsnp6$A1_dbsnp=="C", "G", "ERROR"))))  
+
+dbsnp6$A2_dbsnp_rc <- ifelse(dbsnp6$A2_dbsnp=="A", "T", 
+						ifelse(dbsnp6$A2_dbsnp=="T", "A",  
+							ifelse(dbsnp6$A2_dbsnp=="G", "C", 
+								ifelse(dbsnp6$A2_dbsnp=="C", "G", "ERROR"))))  
+table(dbsnp6$A1_dbsnp)
+table(dbsnp6$A1_dbsnp_rc)
+table(dbsnp6$A2_dbsnp)
+table(dbsnp6$A2_dbsnp_rc)
+
+# Sort by CHR and BP
+dbsnp6 <- dbsnp6[ with(dbsnp6, order(CHR_dbsnp, BP_dbsnp)), ]
+dim(dbsnp6) # 10668476    11
+system("mkdir -p ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/")
+write.table(dbsnp6,gzfile("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed.txt.gz"), quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+quit("no")
+
+
+################################
+### Prepare 1000 Genomes files for calculating MAF of variants in Europeans, and for ancestry check in CMC (script 3) - download, convert to plink format, and QC
+################################
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/integrated_call_samples_v3.20130502.ALL.panel
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr1.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr2.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr2.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr3.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr3.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr4.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr4.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr5.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr5.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr6.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr6.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr7.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr7.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr8.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr8.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr9.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr9.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr10.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr10.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr11.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr11.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr12.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr12.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr13.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr13.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr14.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr14.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr15.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr15.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr16.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr16.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr17.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr17.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr18.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr18.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr19.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr19.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr20.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr20.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr21.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr21.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+wget ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz ftp://ftp.1000genomes.ebi.ac.uk/vol1/ftp/release/20130502/ALL.chr22.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz.tbi
+
+# prepare color list for later
+cat integrated_call_samples_v3.20130502.ALL.panel | tail -n+2 | awk -v OFS="\t" '{print "0", $1, $3}' > populations_summary_0.txt
+# add a title 
+echo -e "FID\tIID\tPop" | cat - populations_summary_0.txt  > populations_summary.txt
+# Replace EUR to CEU for compatibility with plinkQC
+sed -i 's/EUR/CEU/g' populations_summary.txt 
+# Now have a colour file (manually edited)
+echo -e "Pop\tColor
+AFR\tchocolate
+AMR\torange
+EAS\torchid
+SAS\tdarkorange
+CEU\tgray
+TSI\t'#FDE725FB'" > population_colours.txt # populations_summary.txt  and  population_colours.txt had all occurences of "EUR" from 1000G changed to "CEU" for compatibility with plinkQC. Also, TSI needs to be specified in population_colours.txt for compatibility
+
+
+
+
+# QC chromosomes G1000:
+############################################################# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/g1000_preprocess_genotype.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu,interruptible_cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=50000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+#SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time
+
+CHR=${SLURM_ARRAY_TASK_ID}
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check
+# convert to plink format
+
+plink --vcf ALL.chr${CHR}.phase3_shapeit2_mvncall_integrated_v5b.20130502.genotypes.vcf.gz  --const-fid 0 --snps-only --biallelic-only strict --maf 0.01 --make-bed --out g1000_phase3_chr${CHR}_1
+plink --bfile g1000_phase3_chr${CHR}_1 --geno 0.2 --make-bed --out g1000_phase3_chr${CHR}_2
+plink --bfile g1000_phase3_chr${CHR}_2 --mind 0.2 --make-bed --out g1000_phase3_chr${CHR}_3
+plink --bfile g1000_phase3_chr${CHR}_3 --geno 0.05 --make-bed --out g1000_phase3_chr${CHR}_4
+plink --bfile g1000_phase3_chr${CHR}_4 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_5
+plink --bfile g1000_phase3_chr${CHR}_5 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_6
+plink --bfile g1000_phase3_chr${CHR}_6 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_7
+plink --bfile g1000_phase3_chr${CHR}_7 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_8 # removing very low frequency vars for  to reduce file sizes, but will filter later for MAF 0.05 for the European sample detection step (all samples), and for MAF 0.05 for the frequency detection inclusion in dbsnp (only Eur)
+
+# variants are labeled with a dot at the moment. Label with CHR_BP for compatibility with "annotate_rsids_in_bim_file.R". This can be easily done with plink2 (not plink 1.9 or other versions).
+plink2 --bfile g1000_phase3_chr${CHR}_8 --set-missing-var-ids @_# --make-bed --out g1000_phase3_chr${CHR}_9
+
+# Annotate bim file with RS ids.
+conda activate ldsc_R
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/annotate_rsids_in_bim_file.R g1000_phase3_chr${CHR}_9 g1000_phase3_chr${CHR}_9_annotated # note: this requires annotate_rsids_in_bim_file.R and the output of file created above, ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed.txt.gz
+
+# Final QC
+plink --bfile g1000_phase3_chr${CHR}_9_annotated --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_10
+plink --bfile g1000_phase3_chr${CHR}_10 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out g1000_phase3_chr${CHR}_11
+
+######################################
+
+sbatch /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/g1000_preprocess_genotype.sh # will run all 22 chr automatically
+
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check
+# Merge different chromosome files. First, create file containing file names, to concatenate files using plink in the subsequent step
+rm -f multiple_chromosomes_filenames.txt && for CHR in {1..22}; do echo g1000_phase3_chr${CHR}_11 >> multiple_chromosomes_filenames.txt; done
+
+# then use the file to merge all chrs
+plink --merge-list multiple_chromosomes_filenames.txt --snps-only --biallelic-only strict --make-bed --out 1000genomes_geno_1
+
+# QC
+plink --bfile 1000genomes_geno_1 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_2
+plink --bfile 1000genomes_geno_2 --maf 0.0001 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_3
+
+# check individuals for excess heterozigosity (High levels of heterozygosity within an individual might be an indication of low sample quality whereas low levels of heterozygosity may be due to inbreeding.). First, run the --het check in plink. Get pruned SNPs first.
+# get list of pruned SNPs
+plink --bfile 1000genomes_geno_3 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_3.indepSNP
+
+plink --bfile 1000genomes_geno_3 --extract 1000genomes_geno_3.indepSNP.prune.in --het --out 1000genomes_geno_3.R_check
+# run this R script that detects outliers - This is a script from  https://github.com/MareesAT/GWA_tutorial/
+conda activate ldsc_R
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_3.R_check.het" "1000genomes_geno_3.R_check.het.fail"
+# The following code generates a list of individuals who deviate more than 3 standard deviations from the heterozygosity rate mean.
+cat 1000genomes_geno_3.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> genotypes_3.R_check.het.fail.individuals && head genotypes_3.R_check.het.fail.individuals # none to report.
+
+# Check samples for relatedness (individuals with pihat > 0.2) 
+plink --bfile 1000genomes_geno_3 --extract 1000genomes_geno_3.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2
+cat  pihat_min0.2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat.genome && head zoom_pihat.genome # 5 relationships detected
+
+# remove one of each pair.
+awk '{print $3 "\t" $4}' < zoom_pihat.genome > individuals_to_remove
+plink --bfile 1000genomes_geno_3 --remove individuals_to_remove --make-bed --out 1000genomes_geno_4
+
+# Check samples for relatedness again  
+plink --bfile 1000genomes_geno_4 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_4.indepSNP
+plink --bfile 1000genomes_geno_4 --extract 1000genomes_geno_4.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2_v2
+cat  pihat_min0.2_v2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat_v2.genome && head zoom_pihat_v2.genome # none detected
+
+# construct plink files for EUR only
+			grep "CEU" populations_summary.txt | awk 'BEGIN{OFS="\t"} {print $1,$2}' > Europeans_in_G1000
+
+			plink --bfile 1000genomes_geno_4 --keep  Europeans_in_G1000 --make-bed --out 1000genomes_geno_5_EUR_ONLY_1
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_1 --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_EUR_ONLY_2a
+
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2a --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_EUR_ONLY_2a.indepSNP
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2a --extract 1000genomes_geno_5_EUR_ONLY_2a.indepSNP.prune.in --het --out 1000genomes_geno_5_EUR_ONLY_2a.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_EUR_ONLY_2a.R_check.het" "1000genomes_geno_5_EUR_ONLY_2a.R_check.het.fail"
+			cat 1000genomes_geno_5_EUR_ONLY_2a.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_EUR_ONLY_2a.R_check.het.fail.individuals && head 1000genomes_geno_5_EUR_ONLY_2a.R_check.het.fail.individuals # 4 individuals. Remove and rerun test.
+			sed 's/"// g' 1000genomes_geno_5_EUR_ONLY_2a.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2a --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_EUR_ONLY_2b
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2b --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_EUR_ONLY_2b.indepSNP
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2b --extract 1000genomes_geno_5_EUR_ONLY_2b.indepSNP.prune.in --het --out 1000genomes_geno_5_EUR_ONLY_2b.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_EUR_ONLY_2b.R_check.het" "1000genomes_geno_5_EUR_ONLY_2b.R_check.het.fail"
+			cat 1000genomes_geno_5_EUR_ONLY_2b.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_EUR_ONLY_2b.R_check.het.fail.individuals && head 1000genomes_geno_5_EUR_ONLY_2b.R_check.het.fail.individuals # One more to remove.
+			sed 's/"// g' 1000genomes_geno_5_EUR_ONLY_2b.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2b --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_EUR_ONLY_2c
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2c --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_EUR_ONLY_2c.indepSNP
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2c --extract 1000genomes_geno_5_EUR_ONLY_2c.indepSNP.prune.in --het --out 1000genomes_geno_5_EUR_ONLY_2c.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_EUR_ONLY_2c.R_check.het" "1000genomes_geno_5_EUR_ONLY_2c.R_check.het.fail"
+			cat 1000genomes_geno_5_EUR_ONLY_2c.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_EUR_ONLY_2c.R_check.het.fail.individuals && head 1000genomes_geno_5_EUR_ONLY_2c.R_check.het.fail.individuals # None
+
+			# check for relatedness
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2c --extract 1000genomes_geno_5_EUR_ONLY_2c.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2
+			cat  pihat_min0.2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat.genome && head zoom_pihat.genome # no relationships detected
+
+			# final check
+			plink --bfile 1000genomes_geno_5_EUR_ONLY_2c --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_6_EUR_ONLY_3
+			plink --bfile 1000genomes_geno_6_EUR_ONLY_3 --freq --out 1000genomes_geno_6_EUR_ONLY_3
+
+# construct plink files for AFR only
+			grep "AFR" populations_summary.txt | awk 'BEGIN{OFS="\t"} {print $1,$2}' > Africans_in_G1000
+
+			plink --bfile 1000genomes_geno_4 --keep  Africans_in_G1000 --make-bed --out 1000genomes_geno_5_AFR_ONLY_1
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_1 --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_AFR_ONLY_2a
+
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2a --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_AFR_ONLY_2a.indepSNP
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2a --extract 1000genomes_geno_5_AFR_ONLY_2a.indepSNP.prune.in --het --out 1000genomes_geno_5_AFR_ONLY_2a.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_AFR_ONLY_2a.R_check.het" "1000genomes_geno_5_AFR_ONLY_2a.R_check.het.fail"
+			cat 1000genomes_geno_5_AFR_ONLY_2a.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_AFR_ONLY_2a.R_check.het.fail.individuals && head 1000genomes_geno_5_AFR_ONLY_2a.R_check.het.fail.individuals # A few individuals. Remove and rerun test.
+			sed 's/"// g' 1000genomes_geno_5_AFR_ONLY_2a.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2a --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_AFR_ONLY_2b
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2b --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_AFR_ONLY_2b.indepSNP
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2b --extract 1000genomes_geno_5_AFR_ONLY_2b.indepSNP.prune.in --het --out 1000genomes_geno_5_AFR_ONLY_2b.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_AFR_ONLY_2b.R_check.het" "1000genomes_geno_5_AFR_ONLY_2b.R_check.het.fail"
+			cat 1000genomes_geno_5_AFR_ONLY_2b.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_AFR_ONLY_2b.R_check.het.fail.individuals && head 1000genomes_geno_5_AFR_ONLY_2b.R_check.het.fail.individuals # a few more to remove.
+			sed 's/"// g' 1000genomes_geno_5_AFR_ONLY_2b.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2b --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_AFR_ONLY_2c
+			# check for heterozygosity again
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2c --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_AFR_ONLY_2c.indepSNP
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2c --extract 1000genomes_geno_5_AFR_ONLY_2c.indepSNP.prune.in --het --out 1000genomes_geno_5_AFR_ONLY_2c.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_AFR_ONLY_2c.R_check.het" "1000genomes_geno_5_AFR_ONLY_2c.R_check.het.fail"
+			cat 1000genomes_geno_5_AFR_ONLY_2c.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_AFR_ONLY_2c.R_check.het.fail.individuals && head 1000genomes_geno_5_AFR_ONLY_2c.R_check.het.fail.individuals # 9 more to remove
+
+			sed 's/"// g' 1000genomes_geno_5_AFR_ONLY_2c.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2c --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_AFR_ONLY_2d
+			# check for heterozygosity again 626 individuals remain
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2d --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_AFR_ONLY_2d.indepSNP
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2d --extract 1000genomes_geno_5_AFR_ONLY_2d.indepSNP.prune.in --het --out 1000genomes_geno_5_AFR_ONLY_2d.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_AFR_ONLY_2d.R_check.het" "1000genomes_geno_5_AFR_ONLY_2d.R_check.het.fail"
+			cat 1000genomes_geno_5_AFR_ONLY_2d.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_AFR_ONLY_2d.R_check.het.fail.individuals && head 1000genomes_geno_5_AFR_ONLY_2d.R_check.het.fail.individuals # 5 more to remove
+
+
+			sed 's/"// g' 1000genomes_geno_5_AFR_ONLY_2d.R_check.het.fail.individuals | awk '{print$1, $2}'> het_fail_ind.txt
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2d --remove het_fail_ind.txt --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5_AFR_ONLY_2e
+			# check for heterozygosity again 626 individuals remain
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2e --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_5_AFR_ONLY_2e.indepSNP
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2e --extract 1000genomes_geno_5_AFR_ONLY_2e.indepSNP.prune.in --het --out 1000genomes_geno_5_AFR_ONLY_2e.R_check
+			Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_5_AFR_ONLY_2e.R_check.het" "1000genomes_geno_5_AFR_ONLY_2e.R_check.het.fail"
+			cat 1000genomes_geno_5_AFR_ONLY_2e.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_5_AFR_ONLY_2e.R_check.het.fail.individuals && head 1000genomes_geno_5_AFR_ONLY_2e.R_check.het.fail.individuals # none more to remove, 621 remaining
+
+			# check for relatedness
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2e --extract 1000genomes_geno_5_AFR_ONLY_2e.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2
+			cat  pihat_min0.2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat.genome && head zoom_pihat.genome # no relationships detected
+
+			# final check
+			plink --bfile 1000genomes_geno_5_AFR_ONLY_2e --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_6_AFR_ONLY_3
+			plink --bfile 1000genomes_geno_6_AFR_ONLY_3 --freq --out 1000genomes_geno_6_AFR_ONLY_3
+
+
+# plink files for all ancestries 
+# check heterozygosity again
+plink --bfile 1000genomes_geno_4 --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_4a
+plink --bfile 1000genomes_geno_4a --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_4a.indepSNP
+plink --bfile 1000genomes_geno_4a --extract 1000genomes_geno_4a.indepSNP.prune.in --het --out 1000genomes_geno_4a.R_check
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/heterozygosity_outliers_list_trailing_cmd.R", echo=TRUE)' "1000genomes_geno_4a.R_check.het" "1000genomes_geno_4a.R_check.het.fail"
+cat 1000genomes_geno_4a.R_check.het.fail | sed 's/"// g' | awk '{print$1, $2}'> 1000genomes_geno_4a.R_check.het.fail.individuals && head 1000genomes_geno_4a.R_check.het.fail.individuals # no individuals to remove.
+
+# check relatedness again
+plink --bfile 1000genomes_geno_4a --extract 1000genomes_geno_4a.indepSNP.prune.in --genome --min 0.2 --out pihat_min0.2
+cat  pihat_min0.2.genome | awk '{ if ($8 >0.9) print $0 }' >  zoom_pihat.genome && head zoom_pihat.genome # no relationships  # The 8th column refers to a Z score calculation, which is used to trim individuals, but unclear why. Based on code from https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6001694/ 
+
+
+# final QC
+plink --bfile 1000genomes_geno_4a --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_5
+plink --bfile 1000genomes_geno_5 --maf 0.01 --hwe 1e-6 --geno 0.05 --mind 0.05 --make-bed --out 1000genomes_geno_6
+
+# calculate PCs - get list of pruned SNPs
+plink --bfile 1000genomes_geno_6 --exclude range /users/k1642468/scratch/precious/high_ld_regions_hg19.txt --indep-pairwise 50 5 0.2 --out 1000genomes_geno_6.indepSNP
+
+# get population covariates per individual
+plink --bfile 1000genomes_geno_6 --extract 1000genomes_geno_6.indepSNP.prune.in --pca --out 1000genomes_geno_6
+
+
+
+
+######################### 
+# Add frequency (imputed from 1000 Genomes) to dbsnp files, for EUR and AFR
+#########################
+# EUR 
+conda activate ldsc_R # loads the R version with the relevant libraries
+R
+library(data.table) 
+library(dplyr) 		
+setDTthreads(threads=16)
+dbsnp_0 <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed.txt.gz", h=T, stringsAsFactors=F)
+dbsnp <- dbsnp_0
+
+# add MAF calculated in Eur 1000G (503 individuals). This is already going to filter out vars with MAF < 0.01 
+maf_g1000_eur <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3.frq", stringsAsFactors=F)
+colnames(maf_g1000_eur) <- paste0(colnames(maf_g1000_eur),"_g1000_eur")
+maf_g1000_eur$A1_g1000_eur_rc <- ifelse(maf_g1000_eur$A1_g1000_eur=="A", "T", 
+						ifelse(maf_g1000_eur$A1_g1000_eur=="T", "A",  
+							ifelse(maf_g1000_eur$A1_g1000_eur=="G", "C", 
+								ifelse(maf_g1000_eur$A1_g1000_eur=="C", "G", "ERROR"))))  
+
+maf_g1000_eur$A2_g1000_eur_rc <- ifelse(maf_g1000_eur$A2_g1000_eur=="A", "T", 
+						ifelse(maf_g1000_eur$A2_g1000_eur=="T", "A",  
+							ifelse(maf_g1000_eur$A2_g1000_eur=="G", "C", 
+								ifelse(maf_g1000_eur$A2_g1000_eur=="C", "G", "ERROR"))))  
+
+table(maf_g1000_eur$A1_g1000_eur_rc)
+table(maf_g1000_eur$A2_g1000_eur_rc)
+dbsnp7 <- merge (dbsnp, maf_g1000_eur, by.x="RSID_dbsnp", by.y="SNP_g1000_eur" ) # these SNPs in G1000 were annotated with the same dbsnp build 
+dim(dbsnp)  # 10668476  
+dim(dbsnp7) #  4761701 
+
+# Check allele versions between dbsnp and g1000 (sanity check - there shouldn't be mismatches in terms of multiallelics, but allele flips and strand switches are possible)
+dbsnp7$allele_match <- ifelse((dbsnp7$A1_dbsnp==dbsnp7$A1_g1000_eur    & dbsnp7$A2_dbsnp==dbsnp7$A2_g1000_eur),    "same_alleles", 
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A2_g1000_eur    & dbsnp7$A2_dbsnp==dbsnp7$A1_g1000_eur),    "allele_flips",   	
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A1_g1000_eur_rc & dbsnp7$A2_dbsnp==dbsnp7$A2_g1000_eur_rc), "strand_switch",
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A2_g1000_eur_rc & dbsnp7$A2_dbsnp==dbsnp7$A1_g1000_eur_rc), "strand_switch_and_allele_switch", "err") )) )					
+table(dbsnp7$allele_match)  # lots of allele/strand flips, but no problem as the programs later on can fix this. Important thing is that there are no errs.
+
+dbsnp7 <- select (dbsnp7, RSID_dbsnp, CHR_dbsnp, BP_dbsnp,CHRBP_hg19, STRAND_dbsnp, A1_dbsnp, A2_dbsnp,A1_dbsnp_rc, A2_dbsnp_rc,  A1_g1000_eur, A2_g1000_eur, MAF_g1000_eur, A1_g1000_eur_rc, A2_g1000_eur_rc)
+
+# Sort by CHR and BP
+dbsnp7 <- dbsnp7[ with(dbsnp7, order(CHR_dbsnp, BP_dbsnp)), ]
+
+write.table(dbsnp7,gzfile("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz"), quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+
+# AFR
+dbsnp <- dbsnp_0
+
+# add MAF calculated in afr 1000G (621 individuals). This is already going to filter out vars with MAF < 0.01 
+maf_g1000_afr <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3.frq", stringsAsFactors=F)
+colnames(maf_g1000_afr) <- paste0(colnames(maf_g1000_afr),"_g1000_afr")
+maf_g1000_afr$A1_g1000_afr_rc <- ifelse(maf_g1000_afr$A1_g1000_afr=="A", "T", 
+						ifelse(maf_g1000_afr$A1_g1000_afr=="T", "A",  
+							ifelse(maf_g1000_afr$A1_g1000_afr=="G", "C", 
+								ifelse(maf_g1000_afr$A1_g1000_afr=="C", "G", "ERROR"))))  
+
+maf_g1000_afr$A2_g1000_afr_rc <- ifelse(maf_g1000_afr$A2_g1000_afr=="A", "T", 
+						ifelse(maf_g1000_afr$A2_g1000_afr=="T", "A",  
+							ifelse(maf_g1000_afr$A2_g1000_afr=="G", "C", 
+								ifelse(maf_g1000_afr$A2_g1000_afr=="C", "G", "ERROR"))))  
+
+table(maf_g1000_afr$A1_g1000_afr_rc)
+table(maf_g1000_afr$A2_g1000_afr_rc)
+dbsnp7 <- merge (dbsnp, maf_g1000_afr, by.x="RSID_dbsnp", by.y="SNP_g1000_afr" ) # these SNPs in G1000 were annotated with the same dbsnp build 
+dim(dbsnp)  # 10668476  
+dim(dbsnp7) #   6671433
+
+# Check allele versions between dbsnp and g1000 (sanity check - there shouldn't be mismatches in terms of multiallelics, but allele flips and strand switches are possible)
+dbsnp7$allele_match <- ifelse((dbsnp7$A1_dbsnp==dbsnp7$A1_g1000_afr    & dbsnp7$A2_dbsnp==dbsnp7$A2_g1000_afr),    "same_alleles", 
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A2_g1000_afr    & dbsnp7$A2_dbsnp==dbsnp7$A1_g1000_afr),    "allele_flips",   	
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A1_g1000_afr_rc & dbsnp7$A2_dbsnp==dbsnp7$A2_g1000_afr_rc), "strand_switch",
+					   ifelse((dbsnp7$A1_dbsnp==dbsnp7$A2_g1000_afr_rc & dbsnp7$A2_dbsnp==dbsnp7$A1_g1000_afr_rc), "strand_switch_and_allele_switch", "err") )) )					
+table(dbsnp7$allele_match)  # lots of allele/strand flips, but no problem as the programs later on can fix this. Important thing is that there are no errs.
+
+dbsnp7 <- select (dbsnp7, RSID_dbsnp, CHR_dbsnp, BP_dbsnp,CHRBP_hg19, STRAND_dbsnp, A1_dbsnp, A2_dbsnp,A1_dbsnp_rc, A2_dbsnp_rc,  A1_g1000_afr, A2_g1000_afr, MAF_g1000_afr, A1_g1000_afr_rc, A2_g1000_afr_rc)
+
+# Sort by CHR and BP
+dbsnp7 <- dbsnp7[ with(dbsnp7, order(CHR_dbsnp, BP_dbsnp)), ]
+
+write.table(dbsnp7,gzfile("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Afrg1000.txt.gz"), quote=FALSE, sep="\t", row.names=FALSE, col.names=TRUE)
+
+
+
+# Final g1000 genotype files (all samples):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6 (.bim/.bed/.fam)
+
+# population ancestry information
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/populations_summary.txt
+
+# frequency of variants in Eur
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3.frq
+
+# Final g1000 genotype files (EUR only):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3 (.bim/.bed/.fam)
+
+# frequency of variants in Afr
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3.frq
+
+# Final g1000 genotype files (AFR only):
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3 (.bim/.bed/.fam)
+
+# Common SNPs AFR, including frequency in G1000
+# ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Afrg1000.txt.gz
+
+# Commmon SNPs EUR, including frequency in G1000
+# ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz
+
+# All snps, annotated 
+# ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed.txt.gz

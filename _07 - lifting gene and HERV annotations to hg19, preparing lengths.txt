@@ -1,0 +1,65 @@
+# In bash and R, prepare the HERV hg38 v2 annotation, lifting it to hg19 (to match our genotype information) / liftover input is sorted by chr and position and looks like: chr1    743267  743268  what_youre_trying_to_liftover
+
+# Download HERV v2 hg38 annotation from https://github.com/mlbendall/telescope_annotation_db/tree/master/builds
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations
+wget https://github.com/mlbendall/telescope_annotation_db/raw/master/builds/HERV_rmsk.hg38.v2/genes.gtf
+wget https://github.com/mlbendall/telescope_annotation_db/raw/master/builds/HERV_rmsk.hg38.v2/transcripts.gtf
+wget http://hgdownload.cse.ucsc.edu/admin/exe/linux.x86_64/liftOver
+wget http://hgdownload.cse.ucsc.edu/goldenPath/hg38/liftOver/hg38ToHg19.over.chain.gz
+chmod 777 liftOver # to give permission for liftOver to execute
+
+################
+# Get hg38 HERV lengths and lift coordinates to hg19 
+################
+conda activate ldsc_R
+R #R>
+	annot <- read.table("genes.gtf", sep="\t", h=F, stringsAsFactors=F)
+	library(tidyr)
+	library(dplyr)
+	new_annot <- annot %>% separate(V9, into=c("empty","hervid"), sep = '[; ]')
+	new_annot <- new_annot %>% select(V1, V4, V5, hervid, V7) 
+	write.table(new_annot, "HERV_genes_hg38_0_unlifted.bed", sep="\t", quote=FALSE, col.names=FALSE, row.names=FALSE)
+	system("./liftOver HERV_genes_hg38_0_unlifted.bed hg38ToHg19.over.chain.gz HERV_genes_hg38_1_lifted.bed HERV_genes_hg38_1_unlifted.bed")
+	system("wc -l HERV_genes_hg38_1_*")
+	remapped <- read.table("HERV_genes_hg38_1_lifted.bed", sep="\t")
+	colnames(remapped) <- c("chr","start","end","herv","strand")
+	# add length
+	remapped$length <- remapped$end - remapped$start
+	# Now, remove "chr" from chromosome name, as genotype info just holds chr number (check vcf files)
+	remapped$chr <- sub("^chr", "", remapped$chr)
+	write.table(remapped, "HERV_genes_is_now_hg19.bed", quote=F, col.names=F, row.names=F, sep="\t")
+
+################
+# Get hg38 gene lengths and lift coordinates to hg19 
+################
+# A table containing gene coordinates was retrieved through bioMart previously. Just re-reading the file.
+conda activate ldsc_R
+R
+	library(tidyr)
+	library(dplyr)
+	annot <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genes_table.tsv", sep="\t", h=T, stringsAsFactors=F)
+	annot <- annot %>% select(chromosome_name, start_position, end_position, external_gene_name, strand) 
+	# add "chr" to chr id.
+	annot$chromosome_name <- paste0("chr",annot$chromosome_name)
+	# make strand symbol the same as for hervs
+	annot$strand <- sub("^1","+",annot$strand)
+	annot$strand <- sub("^-1","-",annot$strand)
+	# remove duplicated entries
+	annot <- annot[!(duplicated(annot$external_gene_name) | duplicated(annot$external_gene_name, fromLast=TRUE) ) ,]
+	annot <- annot %>% select(chromosome_name, start_position, end_position, external_gene_name, strand) 
+	
+	write.table(annot, "genes_genes_hg38_0_unlifted.bed", sep="\t", quote=FALSE, col.names=FALSE, row.names=FALSE)
+	system("./liftOver genes_genes_hg38_0_unlifted.bed hg38ToHg19.over.chain.gz genes_genes_hg38_1_lifted.bed genes_genes_hg38_1_unlifted.bed")
+	system("wc -l genes_genes_hg38_1_*")
+	remapped <- read.table("genes_genes_hg38_1_lifted.bed", sep="\t")
+	colnames(remapped) <- c("chr","start","end","herv","strand")
+	# add length
+	remapped$length <- remapped$end - remapped$start
+	# Now, remove "chr" from chromosome name, as genotype info just holds chr number (check vcf files)
+	remapped$chr <- sub("^chr", "", remapped$chr)
+	write.table(remapped, "genes_genes_is_now_hg19.bed", quote=F, col.names=F, row.names=F, sep="\t")
+
+
+# Annotations used, lifted to hg19 for compatibility with GWAS data.
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/genes_genes_is_now_hg19.bed
+# /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gene_and_herv_annotations/HERV_genes_is_now_hg19.bed

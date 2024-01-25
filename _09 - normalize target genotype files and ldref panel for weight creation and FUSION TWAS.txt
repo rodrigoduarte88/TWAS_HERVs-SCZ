@@ -1,0 +1,106 @@
+# Create custom-made population reference panels, based on data from 1000 Genomes (for sharing [as these are freely available], and to create TWAS weights [as this will help improve the overlap with external datasets, such as GWAS results]) and from CMC (to run the TWAS presented in the paper, as using genetic structure of the cohort itself slighly improves detection of the TWAS hits). 
+
+# Important input files:
+                    # Pre-processed g1000 genotype files (EUR only):
+                    # /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3 (.bim/.bed/.fam)
+                    # Pre-processed g1000 genotype files (AFR only):
+                    # /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3 (.bim/.bed/.fam)
+                    # Pre-processed CMC files (EUR only)
+                    # /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3
+                    # Pre-processed CMC files (AFR only)
+                    # /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3
+                    # Pre-processed CMC files, EUR, controls only (242)
+                    # /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12_controls_only_2
+
+# EUR  
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/
+      
+    # final QC
+    plink --bfile /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_EUR_ONLY_3 --maf 0.05 --hwe 1e-6 --mind 0.05 --geno 0.05 --make-bed --out 1000G_EUR_LDREF_1
+
+    plink --bfile /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_12 --maf 0.05 --hwe 1e-6 --mind 0.05 --geno 0.05 --make-bed --out CMC_EUR_LDREF_1
+
+    # add "control" info to g1000 fam file# replace "-9" by "1"
+    sed -i -e 's|-9|1|g' 1000G_EUR_LDREF_1.fam
+
+    # merge datasets and QC to remove vars that are present in one but not in the other. # this is to try to make the SNPs from one dataset as concise as possible across the other dataset - important for sharing the 1000 G reference file. See fusion tutorial: "Important: Unless you plan to use your own LD-reference panel, we recommend first restricting your --bfile genotypes to the set of markers in the LD reference data we provide, as this is the set of SNPs that will be used for the final association statistic." (source: http://gusevlab.org/projects/fusion/#compute-your-own-predictive-models)
+    plink --bfile CMC_EUR_LDREF_1 --bmerge 1000G_EUR_LDREF_1 --allow-no-sex --make-bed --out merged_EUR_1
+    plink --bfile merged_EUR_1 --geno 0.05 --make-bed --out merged_EUR_2
+    plink --bfile merged_EUR_2 --mind 0.05 --maf 0.05 --hwe 1e-6 --geno 0.05 --make-bed --out merged_EUR_3
+
+    # split datasets again. We used a file previously containing FID/IID for CMC samples. Note that you need to subset the CORRECT samples (563 samples, entire EUR cohort). Check fam file at the end to ensure nothing odd's happening.
+    plink2 --bfile merged_EUR_3 --keep  ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --make-bed --out CMC_EUR_LDREF_2
+    plink2 --bfile merged_EUR_3 --remove  ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --make-bed --out 1000G_EUR_LDREF_2
+
+    # final QC, and split by chromosome
+    plink --bfile CMC_EUR_LDREF_2 --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out CMC_EUR_LDREF_3
+    plink --bfile 1000G_EUR_LDREF_2 --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out 1000G_EUR_LDREF_3
+    
+    # put file into separate folder and rename files for compatibility with FUSION and OLlie's script. Files have to be named "CHR.x" (.bim/fam/bed)
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF
+    for chr in `seq 1 22`; do plink --bfile CMC_EUR_LDREF_3 --chr ${chr} --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out CMC_EUR_LDREF/CHR.${chr}; done
+        
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_EUR_LDREF
+    for chr in `seq 1 22`; do plink --bfile 1000G_EUR_LDREF_3 --chr ${chr} --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out 1000G_EUR_LDREF/CHR.${chr}; done
+    
+    # Compress and move 1000 genomes files to Figshare folder, for upload at the end! 
+	tar -czvf 1000G_EUR_LDREF_3.per_chr.tar.gz 1000G_EUR_LDREF/
+    mkdir -p ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/figshare_files
+    mv 1000G_EUR_LDREF_3.per_chr.tar.gz ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/figshare_files/
+
+# AFR
+    # final QC
+    plink --bfile /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/1000G_ancestry_check/1000genomes_geno_6_AFR_ONLY_3 --maf 0.05 --hwe 1e-6 --mind 0.05 --geno 0.05 --make-bed --out 1000G_AFR_LDREF_1
+
+    plink --bfile /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_AFR_12 --maf 0.05 --hwe 1e-6 --mind 0.05 --geno 0.05 --make-bed --out CMC_AFR_LDREF_1
+
+    # add "control" info to g1000 fam file# replace "-9" by "1"
+    sed -i -e 's|-9|1|g' 1000G_AFR_LDREF_1.fam
+
+    # merge datasets and QC to remove vars that are present in one but not in the other. # this is to try to make the SNPs from one dataset as concise as possible across the other dataset - important for sharing the 1000 G reference file. See fusion tutorial: "Important: Unless you plan to use your own LD-reference panel, we recommend first restricting your --bfile genotypes to the set of markers in the LD reference data we provide, as this is the set of SNPs that will be used for the final association statistic." (source: http://gusevlab.org/projects/fusion/#compute-your-own-predictive-models)
+    plink --bfile CMC_AFR_LDREF_1 --bmerge 1000G_AFR_LDREF_1 --allow-no-sex --make-bed --out merged_AFR_1
+    plink --bfile merged_AFR_1 --geno 0.05 --make-bed --out merged_AFR_2
+    plink --bfile merged_AFR_2 --mind 0.05 --maf 0.05 --hwe 1e-6 --geno 0.05 --make-bed --out merged_AFR_3
+
+    # split datasets again. We used a file previously containing FID/IID for CMC samples. Note that you need to subset the CORRECT samples (563 samples, entire AFR cohort). Check fam file at the end to ensure nothing odd's happening.
+    plink2 --bfile merged_AFR_3 --keep  ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --make-bed --out CMC_AFR_LDREF_2
+    plink2 --bfile merged_AFR_3 --remove  ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --make-bed --out 1000G_AFR_LDREF_2
+
+    # final QC, and split by chromosome
+    plink --bfile CMC_AFR_LDREF_2 --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out CMC_AFR_LDREF_3
+    plink --bfile 1000G_AFR_LDREF_2 --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out 1000G_AFR_LDREF_3
+    
+    # put file into separate folder and rename files for compatibility with FUSION and OLlie's script. Files have to be named "CHR.x" (.bim/fam/bed)
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF
+    for chr in `seq 1 22`; do plink --bfile CMC_AFR_LDREF_3 --chr ${chr} --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out CMC_AFR_LDREF/CHR.${chr}; done
+        
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_AFR_LDREF
+    for chr in `seq 1 22`; do plink --bfile 1000G_AFR_LDREF_3 --chr ${chr} --maf 0.05 --geno 0.05 --mind 0.05 --hwe 1e-6 --make-bed --out 1000G_AFR_LDREF/CHR.${chr}; done
+    
+    # Compress and move 1000 genomes files to Figshare folder, for upload at the end! 
+	tar -czvf 1000G_AFR_LDREF_3.per_chr.tar.gz 1000G_AFR_LDREF/
+    mkdir -p ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/figshare_files
+    mv 1000G_AFR_LDREF_3.per_chr.tar.gz ~/commonmind/Rodrigo/TWAS_HERVs_SCZ/figshare_files/
+
+
+# SUMMARY OF QC'd genotype files (note: even though CMC files say LDREF, they are also target files for the creation of the TWAS weights)
+# WHOLE CHROMOSOME
+# EUR, CMC
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF_3"
+# EUR, 1000 Genomes
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_EUR_LDREF_3"
+# AFR, CMC
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF_3"
+# AFR, 1000 Genomes
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_AFR_LDREF_3"
+
+# SPLIT BY CHROMOSOME
+# EUR, CMC
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF/CHR*" 
+# EUR, 1000 Genomes
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_EUR_LDREF/CHR*"
+# AFR, CMC
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF/CHR*"
+# AFR, 1000 Genomes
+"/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_AFR_LDREF/CHR*"
+

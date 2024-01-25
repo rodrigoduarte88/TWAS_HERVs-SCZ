@@ -1,0 +1,168 @@
+# Pre-imputation processing. We will work only with autosomes, and at this pre-imputation stage, we will analyse everyone (including non-Europeans), but will remove variants or individuals that do not survive QC tests.
+
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3
+
+
+# Create list of relevant individuals to keep from genetic data. This extracts relevant individual ids from pd file, adds "zero" for family ID, and removes header of this file
+# cp /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ-copy/pd_910_all /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_all
+awk '{print "0" "\t" $4}'  /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_all | tail -n +2 | sed '$ d' > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID # remove last 0 from the tail of this file if needed
+mv 1_Originals/* .
+
+
+################
+# CMC1 - single chip - CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome 
+################
+# Plink files, hg19
+
+# Sex check # first, merge vars from chromosomes X and XY (pseudo-autosomal region of X). They're currently split (chrs in bim file are 1-22, 23 (X), 24 (Y), 25 (XY) and 26 (MT)) 
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed --merge-x  --make-bed --out MC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome-sex-check_1
+# Now, since you already have sex information on the pheno file, you can just run a sex-check on plink
+plink --bfile MC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome-sex-check_1 --check-sex # this will output plink.sexcheck, which will be automatically read by the next script. (it will be overwritten every time you run this!). 
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/gender_check.R", echo=TRUE)' # this is from https://github.com/MareesAT/GWA_tutorial/
+grep "PROBLEM" plink.sexcheck| awk '{print$1,$2}'> sex_discrepancy_CMC1.txt && head sex_discrepancy_CMC1.txt # there are a few sex discrepancies! remove!  # https://zzz.bwh.harvard.edu/plink/summary.shtml#:~:text=this%20(nuclear)%20family-,Sex%20check,-This%20option%20uses # A PROBLEM arises if the two sexes do not match, or if the SNP data or pedigree data are ambiguous with regard to sex. A male call is made if F is more than 0.8; a femle call is made if F is less than 0.2.
+
+# keep only individuals for whom there's RNA-seq data
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed --keep /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_0
+
+# remove samples for whom there was a sex mismatch with pheno file
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_0 --remove sex_discrepancy_CMC1.txt --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_1
+
+# select only chr1-22, and biallelic SNPs
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_1 --snps-only just-acgt --biallelic-only strict --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_2 
+
+# Pre-imputation QC. # hwe settings: filter variants using controls only
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_2 --chr 1-22 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-6 --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_3
+
+# hwe settings: filter variants using all individuals, but a more relaxed cutoff
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_3 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-10 include-nonctrl --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_4
+	
+# final check
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_4 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-10 include-nonctrl --make-bed --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5
+
+# Convert to vcf	
+plink --bfile CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5  --recode vcf-iid --out CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5
+# bcftools view CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5.vcf | less -S # looks all good 
+
+# compress and create index for bcftools
+conda activate general # contains general tools like bgzip, zip, etc.
+bgzip --force CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5.vcf && tabix -p vcf CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5.vcf.gz
+
+# separate per chromosome and compress, for upload to the Michigan Server
+for i in {1..22}; do bcftools view CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5.vcf.gz --regions ${i} | bgzip --force > CMC_MSSM-Penn-Pitt_DLPFC_DNA_IlluminaOmniExpressExome_QCed_5.chr_${i}.vcf.gz; done
+
+
+
+################
+# CMC3 - hg38 - CMC_HBCC_1M_genotypes_hg38_include.vcf.gz # note that chr notation should be "chr1", not "1", if uploading hg38 vcf files.
+################
+
+# convert to plink format. --const-fid 0 will force FID and IID to join together and generate file names similar to CMC1.
+plink --vcf CMC_HBCC_1M_genotypes_hg38_include.vcf.gz --const-fid 0 --make-bed --out CMC_HBCC_1M_genotypes_hg38_include_1
+
+# keep only relevant individuals, and retain only ACTG biallelic SNPs
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_1 --keep /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --snps-only just-acgt --biallelic-only strict --make-bed --out CMC_HBCC_1M_genotypes_hg38_include_2 
+
+# Add individual-level information to plink files (for calculation of hwe using ctrls and sex check). This script will fail if the target dataset has more samples than those in /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID, due to a dependency on the information contained in the pd file.
+conda activate ldsc_R
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/repopulate_pheno_info_for_fam_files.R CMC_HBCC_1M_genotypes_hg38_include_2  CMC_HBCC_1M_genotypes_hg38_include_3
+
+# Sex check - these files have 1-22 chromosomes, and then X 23, Y 24, and MT 26, but no XY 25.
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_3  --check-sex
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/gender_check.R", echo=TRUE)' 
+grep "PROBLEM" plink.sexcheck| awk '{print$1,$2}'> sex_discrepancy_CMC3_1M.txt && head sex_discrepancy_CMC3_1M.txt # 5 mismatches
+
+# remove samples for whom there was a sex mismatch with pheno file
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_3 --remove sex_discrepancy_CMC3_1M.txt --chr 1-22 --make-bed --out CMC_HBCC_1M_genotypes_hg38_include_4
+
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_4 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-6 --make-bed --out CMC_HBCC_1M_genotypes_hg38_include_5
+
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_5 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-10 include-nonctrl --make-bed --out CMC_HBCC_1M_genotypes_hg38_include_6
+
+# Convert to vcf
+plink --bfile CMC_HBCC_1M_genotypes_hg38_include_6 --recode vcf-iid --out CMC_HBCC_1M_genotypes_hg38_include_6 # bcftools view CMC_HBCC_1M_genotypes_hg38_include_6.vcf | less -S
+
+# add "chr" to each chromosome number (last step removed it)
+conda activate general
+cat CMC_HBCC_1M_genotypes_hg38_include_6.vcf | awk '{if($0 !~ /^#/) print "chr"$0; else print $0}' | bgzip --force > CMC_HBCC_1M_genotypes_hg38_include_6.vcf.gz && tabix -p vcf CMC_HBCC_1M_genotypes_hg38_include_6.vcf.gz
+
+# separate per chromosome and compress, for upload to the Michigan Server
+for i in {1..22}; do bcftools view CMC_HBCC_1M_genotypes_hg38_include_6.vcf.gz --regions chr${i} | bgzip > CMC_HBCC_1M_genotypes_hg38_include_6.chr_${i}.vcf.gz; done	
+
+
+################
+# CMC3 - hg38 - CMC_HBCC_h650_genotypes_hg38_include.vcf.gz # note that chr notation should be "chr1", not "1", if uploading hg38 vcf files.
+################
+# Convert to plink
+plink --vcf CMC_HBCC_h650_genotypes_hg38_include.vcf.gz --const-fid 0 --make-bed --out CMC_HBCC_h650_genotypes_hg38_1 
+
+# keep only relevant individuals and retain only ACTG biallelic SNPs
+plink --bfile CMC_HBCC_h650_genotypes_hg38_1 --keep /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --snps-only just-acgt --biallelic-only strict --make-bed --out CMC_HBCC_h650_genotypes_hg38_2 
+
+# Add individual-level information to plink files  (for calculation of hwe using ctrls and sex check). This script will fail if the target dataset has more samples than those in /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID, due to a dependency on the information contained in the pd file.
+conda activate ldsc_R 
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/repopulate_pheno_info_for_fam_files.R CMC_HBCC_h650_genotypes_hg38_2 CMC_HBCC_h650_genotypes_hg38_3 
+
+# Sex check - these files have 1-22 chromosomes, and then X 23, Y 24, and MT 26, but no XY 25.
+plink --bfile CMC_HBCC_h650_genotypes_hg38_3 --check-sex # one problem detected
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/gender_check.R", echo=TRUE)' 
+grep "PROBLEM" plink.sexcheck| awk '{print$1,$2}'> sex_discrepancy_CMC3_h650.txt && head sex_discrepancy_CMC3_h650.txt # 5 mismatches
+
+plink --bfile CMC_HBCC_h650_genotypes_hg38_3 --remove sex_discrepancy_CMC3_h650.txt --chr 1-22 --make-bed --out CMC_HBCC_h650_genotypes_hg38_4
+
+# qc data
+plink --bfile CMC_HBCC_h650_genotypes_hg38_4 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-6 --make-bed --out CMC_HBCC_h650_genotypes_hg38_5
+
+plink --bfile CMC_HBCC_h650_genotypes_hg38_5 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-10 include-nonctrl --make-bed --out CMC_HBCC_h650_genotypes_hg38_6
+
+# Convert to vcf
+plink --bfile CMC_HBCC_h650_genotypes_hg38_6 --recode vcf-iid --out CMC_HBCC_h650_genotypes_hg38_6 # bcftools view CMC_HBCC_h650_genotypes_hg38_6.vcf | less -S
+
+# add "chr" to each chromosome number (last step removed it)
+conda activate general
+cat CMC_HBCC_h650_genotypes_hg38_6.vcf | awk '{if($0 !~ /^#/) print "chr"$0; else print $0}' | bgzip --force > CMC_HBCC_h650_genotypes_hg38_7.vcf.gz && tabix -p vcf CMC_HBCC_h650_genotypes_hg38_7.vcf.gz	
+
+# separate per chromosome and compress, for upload to the Michigan Server
+for i in {1..22}; do bcftools view CMC_HBCC_h650_genotypes_hg38_7.vcf.gz --regions chr$i | bgzip > CMC_HBCC_h650_genotypes_hg38_7.chr_${i}.vcf.gz; done	
+
+
+################
+# CMC3 - hg38 - CMC_HBCC_Omni5M_genotypes_hg38_include.vcf.gz # note that chr notation should be "chr1", not "1", if uploading hg38 vcf files.
+################
+# Convert to plink
+plink --vcf CMC_HBCC_Omni5M_genotypes_hg38_include.vcf.gz --const-fid 0 --make-bed --out CMC_HBCC_Omni5M_genotypes_hg38_1 
+
+# keep only relevant individuals and retain only ACTG biallelic SNPs
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_1 --keep /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_910_FID_IID --snps-only just-acgt --biallelic-only strict --make-bed --out CMC_HBCC_Omni5M_genotypes_hg38_2 
+
+# Add individual-level information to plink files (for calculation of hwe using ctrls only)
+conda activate ldsc_R
+Rscript --verbose --no-save /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/repopulate_pheno_info_for_fam_files.R CMC_HBCC_Omni5M_genotypes_hg38_2 CMC_HBCC_Omni5M_genotypes_hg38_3 
+
+# Sex check - these files have 1-22 chromosomes, and then X 23, Y 24, and MT 26, but no XY 25.
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_3 --check-sex # one problem detected
+Rscript --no-save -e 'source ("/users/k1642468/scratch/gwas_scripts_tutorial/gender_check.R", echo=TRUE)' 
+grep "PROBLEM" plink.sexcheck| awk '{print$1,$2}'> sex_discrepancy_CMC3_Omni5M.txt && head sex_discrepancy_CMC3_Omni5M.txt # 8 mismatches
+
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_3 --remove sex_discrepancy_CMC3_Omni5M.txt --chr 1-22 --make-bed --out CMC_HBCC_Omni5M_genotypes_hg38_4
+
+# QC
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_4 --mind 0.1 --geno 0.05 --maf 0.01 --hwe 1e-6 --make-bed --out CMC_HBCC_Omni5M_genotypes_hg38_5
+
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_5 --mind 0.05 --geno 0.05 --maf 0.01 --hwe 1e-10 include-nonctrl --make-bed --out CMC_HBCC_Omni5M_genotypes_hg38_6
+
+# Convert to vcf
+plink --bfile CMC_HBCC_Omni5M_genotypes_hg38_6 --recode vcf-iid --out CMC_HBCC_Omni5M_genotypes_hg38_6
+
+# add "chr" to each chromosome number (last step removed it)
+conda activate general
+cat CMC_HBCC_Omni5M_genotypes_hg38_6.vcf | awk '{if($0 !~ /^#/) print "chr"$0; else print $0}' | bgzip --force > CMC_HBCC_Omni5M_genotypes_hg38_7.vcf.gz && tabix -p vcf CMC_HBCC_Omni5M_genotypes_hg38_7.vcf.gz	
+
+# separate per chromosome and compress, for upload to the Michigan Server
+for i in {1..22}; do bcftools view CMC_HBCC_Omni5M_genotypes_hg38_7.vcf.gz --regions chr$i | bgzip > CMC_HBCC_Omni5M_genotypes_hg38_7.chr_${i}.vcf.gz; done	
+
+
+######### All files were submitted for imputation using G1000 Phase 3 mixed dataset, HG19 v5. Filter Rsq 0.3 enabled to reduce download files. Note that only CMC1 was in hg19 - the other chips were automatically lifted to hg19 within the Michigan Imputation Server!
+
+
+
+

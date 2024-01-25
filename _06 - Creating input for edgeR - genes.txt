@@ -1,0 +1,56 @@
+# Download from previous analysis
+cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts
+
+
+srun -p cpu,interruptible_cpu -n 1 --mem=150000 --time 1:00:00  --pty /bin/bash
+conda activate Renv_final_2 # R with DESeq2, tximport, etc. installed
+R # R>
+	###############################################################
+	## Processing gene counts
+	###############################################################
+
+	# R>
+	setwd("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/")
+	pd_file <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/pd_file_590.tsv", stringsAsFactors=F, h=T) 
+	# process all files in folder:
+	sample_id <- dir(file.path("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/genes/kallisto_output"))
+	# to process only subset, you can do this:
+	# sample_id <- as.list(pd_file$RNAseq_name)
+	head(sample_id)
+	files <- file.path("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/genes/kallisto_output", sample_id, "abundance.h5")
+	names(files) <- paste0(sample_id)
+	head(files)
+	all(file.exists(files))
+	length(files)
+	
+	library(biomaRt) #   source("https://bioconductor.org/biocLite.R") && biocLite("biomaRt")
+	mart <- biomaRt::useMart(biomart = "ENSEMBL_MART_ENSEMBL", dataset = "hsapiens_gene_ensembl", host = 'useast.ensembl.org')  # if host not working, you can also try 'www.ensembl.org'
+	listEnsembl()	 # version 108
+	searchDatasets(mart = mart, pattern = "hsapiens")
+	                # dataset              description                version 
+	                # 81 hsapiens_gene_ensembl Human genes (GRCh38.p13) GRCh38.p13
+	
+	# transcripts
+	# note that "start_position" and "end_position" are regarding the GENE, not the transcript. For Transcript, the attributes requested should be attributes=c("transcript_start", "transcript_end")
+	tx2gene <- biomaRt::getBM(attributes = c("embl", "ensembl_gene_id", "external_gene_name", "chromosome_name", "start_position", "end_position", "strand", "transcript_biotype"), filters = c("transcript_biotype","chromosome_name"),values = list("protein_coding",c(1:22, "X", "Y")), mart = mart)
+	write.table(tx2gene, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/tx2gene_table.tsv", sep="\t", quote=FALSE, row.names=F, col.names=T)
+
+	# to be able to have a quick list of genes only, I'll export this one too (just remove "embl" from attributes)
+	genes <- biomaRt::getBM(attributes = c("ensembl_gene_id", "external_gene_name", "chromosome_name", "start_position", "end_position", "strand", "transcript_biotype"), filters = c("transcript_biotype","chromosome_name"),values = list("protein_coding",c(1:22, "X", "Y")), mart = mart)
+	write.table(genes, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genes_table.tsv", sep="\t", quote=FALSE, row.names=F, col.names=T)
+
+	dim(genes) #  19650     7
+ 	dim(tx2gene) # 175393      8
+
+	library(dplyr)
+	tx2gene <- dplyr::rename(tx2gene, TXNAME = embl, GENEID = external_gene_name, CHR = chromosome_name) # file that links transcript id to gene id
+	tx2gene$ensembl_gene_id <- NULL # otherwise it attributes ensembl IDs to the genes.
+	library(tximport)
+	library(readr)
+	library(rhdf5)
+	txi.tx <- tximport(files, type = "kallisto",  txIn=TRUE, txOut=FALSE, tx2gene = tx2gene, countsFromAbundance="lengthScaledTPM") #### see discussion on choice of "countsFromAbundance="lengthScaledTPM" here: https://support.bioconductor.org/p/9137371/#9137415 / Briefly, this will directly modify the counts (from tximport$counts) to remove gene length bias from the analysis.  
+#	save.image(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_590_lengthscaledTPM.RData")
+	save.image(file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/raw_counts/txi_object_session_998_lengthscaledTPM.RData")
+quit("no")
+#############################################################################################
+

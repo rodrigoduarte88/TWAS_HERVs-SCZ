@@ -1,0 +1,813 @@
+########################################
+# Pre-processing schizophrenia GWAS - EUR only
+########################################
+# Activate conda environment. The ldsc_R environment was created by installing r-base=3.6.1 on top of the environment required for ldsc: https://github.com/bulik/ldsc . This is necessary for the munge_sumstats.py script
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait"
+TRAIT="schizophrenia"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+system(paste0("mkdir -p ",WORKDIR))
+setwd(WORKDIR)
+# system(paste0("wget xxxxxx -O ",TRAIT,".tsv.gz")) # download from https://pgc.unc.edu/for-researchers/download-results/
+# read GWAS file 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+str(gwas) 
+dim(gwas) # 7659767 vars
+# retain vars with Rsq (imputation score) > 0.8
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+dim(gwas) # 7117192
+
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+table(duplicated(gwas$CHR_BP)) # SOME DUPS
+table(duplicated(gwas$ID)) # NO DUPS
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19, for compatibility with genetic files.
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+range(dbsnp$MAF_g1000_eur) # [1] 0.01004 0.50000
+dim(dbsnp) # 4761701      14
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans (MAF>0.01)
+range(annotated$MAF_g1000_eur) #  0.01004 0.50000
+dim(annotated) #  4101237      28 # excellent coverage
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+table(annotated$allele_match)  # only 7
+# annotated[annotated$allele_match=="err",] # to see variants that are not matching...
+# remove those that had mismatches
+annotated <- annotated[!annotated$allele_match=="err",]
+
+dim(annotated) #  4101230
+all.equal(annotated$ID, annotated$RSID_dbsnp) # "6130 string mismatches". This means that the rs id of some SNPs from the GWAS do not correspond to the one obtained from dbsnp 151. It's not a huge number of SNPs but let's move forward with the dbsnp annotation version for compatibility of the rest of the code/TWAS/reference panel calculated from scratch
+
+# find correlation in frequency observed in PGC with expected from dbsnp # output from another project
+		# test <- annotated
+		# test$GWAS_freq_a1_gwas_mean <- rowMeans(test[, c('FCAS','FCON')], na.rm=TRUE)
+		# test$GWAS_APPROX_MAF <- ifelse(test$GWAS_freq_a1_gwas_mean < 0.5, test$GWAS_freq_a1_gwas_mean, 1 - test$GWAS_freq_a1_gwas_mean)
+		# # what's the correlation?
+		# cor(test$GWAS_APPROX_MAF,test$MAF_g1000_eur ) # correlation coefficient is 0.9949. Looks pretty well matched.
+
+					# let's make sure the alleles are matched too. This is a patch performed after CMC genotype files have been already run.
+					# Calculate frequencies for the subset of 581 EUR individuals from CMC.
+					# system( "plink --bfile /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_14 --freq --out /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_14")
+					# cmc_freqs <- fread("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/genotype_cmc1_cmc3_imputed/genotypes_EUR_14.frq", stringsAsFactors=F)
+					# cmc_freqs <- select(cmc_freqs, SNP, A1, MAF)
+					# names(cmc_freqs) <- c("SNP_CMC","A1_CMC","A1_AF_CMC")
+					# nrow(test)       # 4101294
+					# test_merge <- merge(test, cmc_freqs, by.x="RSID_dbsnp", by.y="SNP_CMC") 
+					# nrow(test_merge) # 2822697
+
+					# test_merge$A1_FREQ_FOR_CORRELATION_G1000 <- ifelse((test_merge$A1_CMC==test_merge$A1_g1000_eur   ),    test_merge$MAF_g1000_eur,   	
+					# 									        ifelse((test_merge$A1_CMC==test_merge$A2_g1000_eur   ),    (1 - test_merge$MAF_g1000_eur), NA)) 
+															
+					# range(test_merge$A1_FREQ_FOR_CORRELATION_G1000)		# 5-60% range: guessing the flips observed for the calculation of the processed G1000 A1 Freq, are caused by slight changes to allele frequency (A1 is minor allele according to plink, so if there's a different set of individuals, the frequency of A1 can change slightly.)			
+					# test_merge$A1_FREQ_FOR_CORRELATION_G1000 <- as.numeric(test_merge$A1_FREQ_FOR_CORRELATION_G1000)
+					# cor(test_merge$A1_AF_CMC, test_merge$A1_FREQ_FOR_CORRELATION_G1000 ) # correlation coefficient is 0.987. Looks pretty well matched.
+					# test_merge$biggest_difference <- test_merge$A1_AF_CMC - test_merge$A1_FREQ_FOR_CORRELATION_G1000 
+					# # check top differences
+					# test_merge %>% slice_max(biggest_difference) # allele flip?
+					# pdf("test.pdf", w=10,h=10)
+					# plot(test_merge$A1_AF_CMC, test_merge$A1_FREQ_FOR_CORRELATION_G1000 )
+					# dev.off() 
+
+					# # plot histogram
+					# library(ggplot2)
+					# png (file="~/test.png", h =3000,  w=3000 , res=300)
+					# ggplot(test_merge, aes(x=biggest_difference)) + 
+					# 	geom_histogram(aes(y=..density..),      # Histogram with density instead of count on y-axis
+					# 				binwidth=.5,
+					# 				colour="black", fill="white") +
+					# 	geom_density(alpha=.2, fill="#FF6666")  # Overlay with transparent density plot
+					# dev.off()
+
+# remove vars with imputed MAF < 0.05
+range(annotated$MAF_g1000_eur) # 0.01004 0.50000
+dim(annotated) # 4101230      29  
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+range(annotated$MAF_g1000_eur)  # 0.0502 0.5000
+dim(annotated) # 3245639      29
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,PVAL,NEFF,CHROM, POS)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P","Neff", "CHR", "BP") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N-col Neff --chunksize 500000")) # resulting file will have "sumstats.gz" appended at the end
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+dim(gwas)   	#  7112108  
+dim(annotated)  #  3245639  
+dim(munged) 	#  3245634
+dim(filtered) 	#  3245634
+print(paste0("there were ",nrow(gwas)," variants before pre-processing. After controlling for MAF, imputation scores, and using other parameters from munge_sumstats, there were ", nrow(munged), ". This is a reduction of ", (nrow(gwas)-nrow(filtered)),", or ",round((nrow(gwas)-nrow(filtered))/nrow(gwas)*100, digits=2),"%"))
+
+filtered <- filtered[order(filtered$SNP),]
+
+# print output files
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/schizophrenia.gwas.fusion"
+
+focus_input <- select(filtered, CHR, SNP, BP, A1, A2, Z, Neff)
+colnames(focus_input) <- c("CHR","SNP","BP","A1", "A2", "Z", "N")
+write.table(focus_input, paste0(WORKDIR,"/",TRAIT,".gwas.focus"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FOCUS GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.focus"))
+# [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/schizophrenia.gwas.focus"
+quit("no")
+
+
+# Other traits:
+# BD_EUR, MDD_EUR, ASD_EUR, ADHD_EUR
+
+########################################
+# Pre-processing  GWAS - BD EUR only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait"
+TRAIT="BD_EUR"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- dplyr::select(gwas, "CHROM","POS","ID","A1","A2","BETA","SE","PVAL","IMPINFO","NEFFDIV2")
+colnames(gwas) <- c("CHROM","POS","ID","A1","A2","BETA","SE","PVAL","IMPINFO","NEFF")
+
+str(gwas) 
+# retain vars with Rsq (imputation score) > 0.8
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+# remove duplicated variants by position
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+# gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+annotated <- annotated[!annotated$allele_match=="err",]
+# remove vars with imputed MAF < 0.05 in Eur
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,PVAL,CHROM, POS, NEFF)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP", "NEFF") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N-col NEFF --chunksize 500000")) 
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/BD_EUR.gwas.fusion"
+
+# print focus input file
+focus_input <- select(filtered, CHR, SNP, BP, A1, A2, Z, NEFF)
+colnames(focus_input) <- c("CHR","SNP","BP","A1", "A2", "Z", "N")
+write.table(focus_input, paste0(WORKDIR,"/",TRAIT,".gwas.focus"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FOCUS GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.focus"))
+#[1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/BD_EUR.gwas.focus"
+quit("no")
+
+############################################################################################
+
+########################################
+# Pre-processing  GWAS - MDD EUR only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait"
+TRAIT="MDD_EUR"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- dplyr::select(gwas, "MarkerName","A1","A2","LogOR","StdErrLogOR","P")
+colnames(gwas) <- c("ID","A1","A2","BETA","SE","PVAL")
+# gwas <- dplyr::select(gwas, "CHROM","POS","ID","A1","A2","BETA","SE","PVAL","IMPINFO","NEFFDIV2")
+# colnames(gwas) <- c("CHROM","POS","ID","A1","A2","BETA","SE","PVAL","IMPINFO","NEFF")
+
+gwas$A1 <- toupper(gwas$A1)
+gwas$A2 <- toupper(gwas$A2)
+
+str(gwas) 
+# retain vars with Rsq (imputation score) > 0.8
+# gwas <- gwas[gwas$IMPINFO > 0.8, ]
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+# gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+# gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="ID", by.y="RSID_dbsnp") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+# they are already annotated. just retrieving chr/bp info...
+# annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+# 									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+# 										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+# 											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+# 											)) )					
+# annotated <- annotated[!annotated$allele_match=="err",]
+# remove vars with imputed MAF < 0.05 in Eur
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, ID,A1,A2,BETA,SE,PVAL,CHR_dbsnp, BP_dbsnp)#, NEFF)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP")#, "NEFF") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N 500199 --chunksize 500000")) # N retrieved from paper.
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/MDD_EUR.gwas.fusion"
+
+# print focus input file
+focus_input <- select(filtered, CHR, SNP, BP, A1, A2, Z, N)
+colnames(focus_input) <- c("CHR","SNP","BP","A1", "A2", "Z", "N")
+write.table(focus_input, paste0(WORKDIR,"/",TRAIT,".gwas.focus"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FOCUS GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.focus"))
+#[1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/MDD_EUR.gwas.focus"
+
+
+############################################################################################
+
+########################################
+# Pre-processing  GWAS - ASD EUR only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait"
+TRAIT="ASD_EUR"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- dplyr::select(gwas, "CHR","BP","SNP","A1","A2","OR","SE","P","INFO")#,"NEFFDIV2")
+colnames(gwas) <- c("CHROM","POS","ID","A1","A2","OR","SE","PVAL","IMPINFO")#,"NEFF")
+
+str(gwas) 
+# retain vars with Rsq (imputation score) > 0.8
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+# gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+annotated <- annotated[!annotated$allele_match=="err",]
+# remove vars with imputed MAF < 0.05 in Eur
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,OR,SE,PVAL,CHROM, POS)#, NEFF)
+colnames(annotated) <- c("SNP", "A1", "A2","OR","SE","P", "CHR", "BP")#, "NEFF") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N 46350 --chunksize 500000")) # N added from paper
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ASD_EUR.gwas.fusion"
+
+# print focus input file
+focus_input <- select(filtered, CHR, SNP, BP, A1, A2, Z, N)
+colnames(focus_input) <- c("CHR","SNP","BP","A1", "A2", "Z", "N")
+write.table(focus_input, paste0(WORKDIR,"/",TRAIT,".gwas.focus"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FOCUS GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.focus"))
+# [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ASD_EUR.gwas.focus"
+q("no")
+
+
+########################################
+# Pre-processing  GWAS - ADHD EUR only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait"
+TRAIT="ADHD_EUR"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- dplyr::select(gwas, "CHR","BP","SNP","A1","A2","OR","SE","P","INFO","Neff")
+colnames(gwas) <- c("CHROM","POS","ID","A1","A2","OR","SE","PVAL","IMPINFO","NEFF")
+
+str(gwas) 
+# retain vars with Rsq (imputation score) > 0.8
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+# gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+annotated <- annotated[!annotated$allele_match=="err",]
+# remove vars with imputed MAF < 0.05 in Eur
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,OR,SE,PVAL,CHROM, POS, NEFF)
+colnames(annotated) <- c("SNP", "A1", "A2","OR","SE","P", "CHR", "BP", "NEFF") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N-col NEFF --chunksize 500000")) 
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ADHD_EUR.gwas.fusion"
+
+# print focus input file
+focus_input <- select(filtered, CHR, SNP, BP, A1, A2, Z, NEFF)
+colnames(focus_input) <- c("CHR","SNP","BP","A1", "A2", "Z", "N")
+write.table(focus_input, paste0(WORKDIR,"/",TRAIT,".gwas.focus"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FOCUS GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.focus"))
+# [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ADHD_EUR.gwas.focus"
+
+
+
+
+
+########################################
+# Pre-processing schizophrenia GWAS AFR only
+#######################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas"
+TRAIT="schizophrenia_AFR"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+system(paste0("mkdir -p ",WORKDIR))
+setwd(WORKDIR)
+# system(paste0("wget xxxxxx -O ",TRAIT,".tsv.gz"))
+# read GWAS file 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+str(gwas) 
+# retain vars with Rsq (imputation score) > 0.8
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Afrg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_afr & annotated$A2==annotated$A2_g1000_afr), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_afr & annotated$A2==annotated$A1_g1000_afr), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_afr_rc & annotated$A2==annotated$A2_g1000_afr_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_afr_rc & annotated$A2==annotated$A1_g1000_afr_rc), "match","err")
+											)) )					
+# table(annotated$allele_match)  # no mismatches
+# annotated[annotated$allele_match=="err",] # to see variants that are not matching...
+# remove those that had mismatches
+annotated <- annotated[!annotated$allele_match=="err",]
+
+# remove vars with imputed MAF < 0.05
+range(annotated$MAF_g1000_afr) # 0.01-0.5
+annotated <- annotated[annotated$MAF_g1000_afr > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,PVAL,CHROM, POS)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N 10070 --chunksize 500000")) # resulting file will have "sumstats.gz" appended at the end. Manually added N from paper. # "We also included in the primary GWAS summary statistics from 9 cohorts comprising African American (AA; 6,152 cases 3918 controls)"
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_AFR.gwas.fusion
+
+
+
+
+
+########################################
+# Pre-processing schizophrenia GWAS - ASN only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas"
+TRAIT="schizophrenia_ASN"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+system(paste0("mkdir -p ",WORKDIR))
+setwd(WORKDIR)
+# system(paste0("wget xxxxxx -O ",TRAIT,".tsv.gz"))
+# read GWAS file 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 (note that it may remove some variants that are rare in Europeans but common in other ancestries).
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+# table(annotated$allele_match)  # some mismatches
+# annotated[annotated$allele_match=="err",] # to see variants that are not matching...
+# remove those that had mismatches
+annotated <- annotated[!annotated$allele_match=="err",]
+
+# remove vars with imputed MAF < 0.05
+range(annotated$MAF_g1000_eur)
+dim(annotated) #   
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+range(annotated$MAF_g1000_eur)  # 
+dim(annotated) # 2566019
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,PVAL,CHROM, POS, NEFF)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP","NEFF") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N-col NEFF --chunksize 500000")) # resulting file will have "sumstats.gz" appended at the end. Manually added N from paper. # This one had a col for NEFF, different from the AFR cohort
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_ASN.gwas.fusion"
+
+
+
+
+########################################
+# Pre-processing schizophrenia GWAS - LTN (Latino) only
+########################################
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas"
+TRAIT="schizophrenia_LTN"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+system(paste0("mkdir -p ",WORKDIR))
+setwd(WORKDIR)
+# system(paste0("wget xxxxxx -O ",TRAIT,".tsv.gz"))
+# read GWAS file 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+gwas <- gwas[gwas$IMPINFO > 0.8, ]
+
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas$CHR_BP <- paste0(gwas$CHROM,"_",gwas$POS)
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+gwas <- gwas[!(duplicated(gwas$ID) | duplicated(gwas$ID, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+annotated <- annotated[!annotated$allele_match=="err",]
+
+# remove vars with imputed MAF < 0.05
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,PVAL,CHROM, POS)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N 4324 --chunksize 500000")) # resulting file will have "sumstats.gz" appended at the end. Manually added N from paper. # (LAT; 1,234 cases, 3,090 controls) = 4324
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+filtered <- filtered[order(filtered$SNP),]
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_LTN.gwas.fusion
+
+
+
+
+
+########################################
+# Pre-processing MDD GWAS - EAS
+########################################
+# Activate conda environment. The ldsc_R environment was created by installing r-base=3.6.1 on top of the environment required for ldsc: https://github.com/bulik/ldsc . This is necessary for the munge_sumstats.py script
+conda activate ldsc_R
+R
+WORKDIR="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas"
+TRAIT="MDD_EAS"
+
+# load R libraries
+library(data.table) # enables fast reading of large files (function fread)
+library(dplyr) 		# enables easy selection of specific columns (function select)
+
+setDTthreads(threads=16) # makes R uses all processors in a node of the cluster to speed up the process. For laptops the value can be generally up to 8. 
+system(paste0("mkdir -p ",WORKDIR))
+setwd(WORKDIR)
+# system(paste0("wget xxxxxx -O ",TRAIT,".tsv.gz"))
+# read GWAS file 
+gwas_0 <- fread(paste0(WORKDIR,"/",TRAIT,".tsv.gz"), h=T, stringsAsFactors=F)
+
+gwas <- gwas_0 
+
+# check if there are duplicated SNP IDs, or duplicated variants by position, and remove if needed
+gwas <- dplyr::select (gwas, "MarkerName", "chr", "pos","Allele1","Allele2","Effect", "StdErr", "P.SE") # P.SE corresponds to P value from inverse-variance weighted meta-analysis 
+colnames(gwas) <- c("SNP", "CHR", "BP","A1","A2","BETA", "SE", "P")
+gwas$CHR_BP <- paste0(gwas$CHR,"_",gwas$BP)
+
+gwas$A1 <- toupper(gwas$A1)
+gwas$A2 <- toupper(gwas$A2)
+
+gwas <- gwas[!(duplicated(gwas$CHR_BP) | duplicated(gwas$CHR_BP, fromLast=TRUE) ) ,]
+
+# Annotate variants based on position on dbsnp151, hg19 
+dbsnp <- fread("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/snp151_common/snp151Common_processed_MAF_Eurg1000.txt.gz", h=T, stringsAsFactors=F)
+
+annotated <- merge(gwas, dbsnp, by.x="CHR_BP", by.y="CHRBP_hg19") # note that this will remove low frequency variants in Europeans, since this dbsnp version is already selecting for common variants in Europeans
+
+annotated$allele_match <- ifelse((annotated$A1==annotated$A1_g1000_eur & annotated$A2==annotated$A2_g1000_eur), "match",   	
+									ifelse((annotated$A1==annotated$A2_g1000_eur & annotated$A2==annotated$A1_g1000_eur), "match",   	
+										ifelse((annotated$A1==annotated$A1_g1000_eur_rc & annotated$A2==annotated$A2_g1000_eur_rc), "match", 
+											ifelse((annotated$A1==annotated$A2_g1000_eur_rc & annotated$A2==annotated$A1_g1000_eur_rc), "match","err")
+											)) )					
+annotated <- annotated[!annotated$allele_match=="err",]
+
+# remove vars with imputed MAF < 0.05
+annotated <- annotated[annotated$MAF_g1000_eur > 0.05,]
+
+# keep relevant cols
+annotated <- select(annotated, RSID_dbsnp,A1,A2,BETA,SE,P,CHR, BP)
+colnames(annotated) <- c("SNP", "A1", "A2","BETA","SE","P", "CHR", "BP") 
+
+write.table(annotated, paste0(WORKDIR,"/",TRAIT,".processed"), sep="\t", quote=F, row.names=F, col.names=T) 
+
+system(paste0("munge_sumstats.py --sumstats ",WORKDIR,"/",TRAIT,".processed --out ",WORKDIR,"/",TRAIT,".processed --snp SNP --a1 A1 --a2 A2 --p P --N 50000 --chunksize 500000")) # N is not provided in sumstats so just using a random number to force munge_sumstats to run and not to remove any variants. 
+
+# now, munge_sumstats.py removed some important columns. Let's import the munged file back to R, and merge with our current gwas table.
+munged <- fread(paste0(WORKDIR,"/",TRAIT,".processed.sumstats.gz"), h=T, stringsAsFactors=F)
+
+# remove A1/A2 columns from the munged variable as otherwise they will be duplicated in the merged variable
+munged$A1 <- NULL
+munged$A2 <- NULL
+
+# merge munged table with gwas table, based on "SNP" column.
+filtered <- merge(munged, annotated, by.x="SNP", by.y="SNP")
+
+# Print fusion input file
+fusion_input <- select(filtered, SNP, A1, A2, Z)
+colnames(fusion_input) <- c("SNP", "A1", "A2", "Z")
+write.table(fusion_input, paste0(WORKDIR,"/",TRAIT,".gwas.fusion"), sep="\t", quote=F, row.names=F, col.names=T)
+print(paste0("FUSION GWAS sumstats at: ", WORKDIR,"/",TRAIT,".gwas.fusion"))
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/MDD_EAS.gwas.fusion
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############################
+# EUR FILES:
+. # [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/schizophrenia.gwas.focus"
+. # [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/schizophrenia.gwas.fusion"
+
+. # [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/BD_EUR.gwas.fusion"
+. # [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/BD_EUR.gwas.focus"
+
+. # [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/MDD_EUR.gwas.fusion"
+. # [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/MDD_EUR.gwas.focus"
+
+. # [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ASD_EUR.gwas.fusion"
+. # [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ASD_EUR.gwas.focus"
+
+. # [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ADHD_EUR.gwas.fusion"
+. # [1] "FOCUS GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/ADHD_EUR.gwas.focus"
+
+# NON-EUR FILES:
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_AFR.gwas.fusion
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_ASN.gwas.fusion"
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/schizophrenia_LTN.gwas.fusion
+# [1] "FUSION GWAS sumstats at: /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/MDD_EAS.gwas.fusion
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

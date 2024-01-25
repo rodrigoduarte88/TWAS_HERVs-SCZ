@@ -1,0 +1,127 @@
+# We have created SNP weights for EUR but there are GWAS results from analyses of African American, Latino and Asian cohorts too. Let's run the rTWAS using the EUR weights, see if any replicates occur with nominal confidence, and then test at least in Africans if any replications are still valid with nominal significance (since we did create the rTWAS weights with the African American samples from the CMC).
+
+
+###################### ~/fusion_multi_trait_CMCpanel_other_pops_EUR_all_1_batch.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+CHROMOSOME=${SLURM_ARRAY_TASK_ID}
+echo "Analyzing ${TRAIT_ANCESTRY}... Chromosome ${CHROMOSOME}"
+
+	sumstats=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/${TRAIT_ANCESTRY}.gwas.fusion
+	weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped.pos"
+	weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1"
+	ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF/CHR."
+	out_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/"${TRAIT_ANCESTRY}
+	mkdir -p ${out_dir}
+	fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+	Rscript --verbose --no-save ${fusion_software_dir}/FUSION.assoc_test.R \
+	--sumstats ${sumstats} \
+	--weights ${weights_pos_file} \
+	--weights_dir ${weights_dir} \
+	--ref_ld_chr ${ref_ld} \
+	--chr ${CHROMOSOME} \
+	--out ${out_dir}/trait.${CHROMOSOME}.dat
+#done
+
+
+###############################################################################
+
+
+trait_ancestries=("schizophrenia_AFR" "schizophrenia_ASN" "schizophrenia_LTN" "MDD_EAS")
+
+for trait_ancestry in "${trait_ancestries[@]}"; do
+    echo ${trait_ancestry}
+    sbatch --array=1-22 --export=TRAIT_ANCESTRY=${trait_ancestry} ~/fusion_multi_trait_CMCpanel_other_pops_EUR_all_1_batch.sh
+    sleep 1
+done
+
+
+################# Process results:
+conda activate fusion_final
+trait_ancestries=("schizophrenia_AFR" "schizophrenia_ASN" "schizophrenia_LTN" "MDD_EAS")
+for trait_ancestry in ${trait_ancestries[@]}; do
+	cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}
+	echo Analysing ${trait_ancestry} with EUR_all_1 SNP weights!
+	head -1  trait.1.dat > trait_____all_chr.tsv
+	tail -n +2 -q trait.* >> trait_____all_chr.tsv
+	pvalue=0.05
+	number_of_unique_genes=8194 # this is the number of RDat files in the SNP weights
+	bonferroni_p=`bc -l <<< "scale=50; $pvalue/$number_of_unique_genes"`
+	results_twas_combined="trait_____all_chr.tsv"
+	significant_file=${results_twas_combined}".Sig" 
+	cat ${results_twas_combined} | awk -v var="${bonferroni_p}" 'NR == 1 || $20 < var' > ${significant_file}
+	echo How many significant HERVs?
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" | wc -l
+	echo HERV names:
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" 
+	echo "Investigate file " /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}/${results_twas_combined} 
+    yes '' | sed 5q
+   	
+done > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Results_cross_ancestry_multi_trait_EUR_weights.txt
+
+# Inspect summary in "Results_multi_trait_analysis_EUR.txt"
+# Results at:
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/schizophrenia_AFR/trait_____all_chr.tsv
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/schizophrenia_ASN/trait_____all_chr.tsv
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/schizophrenia_LTN/trait_____all_chr.tsv
+/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/MDD_EAS/trait_____all_chr.tsv
+
+
+
+
+
+
+# now perform rTWAS of AFR SCZ GWAS, using AFR subset of CMC as weights and ref panel.
+
+###################### ~/fusion_multi_trait_CMCpanel_other_pops_AFR_all_1_batch.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+CHROMOSOME=${SLURM_ARRAY_TASK_ID}
+echo "Analyzing ${TRAIT_ANCESTRY}... Chromosome ${CHROMOSOME}"
+
+	sumstats=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/${TRAIT_ANCESTRY}.gwas.fusion
+	weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/CMC_wrapped.pos"
+	weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1"
+	ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF/CHR."
+	out_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/results/"${TRAIT_ANCESTRY}
+	mkdir -p ${out_dir}
+	fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+	Rscript --verbose --no-save ${fusion_software_dir}/FUSION.assoc_test.R \
+	--sumstats ${sumstats} \
+	--weights ${weights_pos_file} \
+	--weights_dir ${weights_dir} \
+	--ref_ld_chr ${ref_ld} \
+	--chr ${CHROMOSOME} \
+	--out ${out_dir}/trait.${CHROMOSOME}.dat
+#done
+
+
+###############################################################################
+
+
+trait_ancestries=("schizophrenia_AFR")
+
+for trait_ancestry in "${trait_ancestries[@]}"; do
+    echo ${trait_ancestry}
+    sbatch --array=1-22 --export=TRAIT_ANCESTRY=${trait_ancestry} ~/fusion_multi_trait_CMCpanel_other_pops_AFR_all_1_batch.sh
+    sleep 1
+done
+

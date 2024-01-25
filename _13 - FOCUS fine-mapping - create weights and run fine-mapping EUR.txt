@@ -1,0 +1,186 @@
+# # FOCUS install
+# conda create -n focus python=3.7 r-base
+conda activate focus
+# pip install pyfocus --user
+# pip install mygene --user
+# pip install rpy2 --user
+module load mesa-glu/9.0.1-gcc-9.4.0  # loads libGL.so.1 / mesagl, required.
+
+
+# Create weights for FOCUS  
+# First, add DIR to pos file.  
+R
+pos <- read.table("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped.pos", stringsAsFactors=F,h=T)
+pos$DIR <- paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1")
+write.table(pos, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped_2.pos", quote=F, col.names=T, row.names=F)
+quit("no")
+
+mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/focus_weights && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/focus_weights
+focus import /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped_2.pos fusion --tissue CMC --name CMC --output /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/focus_weights/CMC_brain_focus_database
+
+# final DB is /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/focus_weights/CMC_brain_focus_database.db
+
+
+
+# # munge GWASs for FOCUS 
+# already done in script #10
+
+###################### ~/focus_agnostic_multitrait_EUR_all_1.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu								# Request a shared node
+#SBATCH --time=0-24:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=50000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+    #   SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+module load mesa-glu/9.0.1-gcc-9.4.0 
+conda activate focus
+
+CHR=${SLURM_ARRAY_TASK_ID}
+
+trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+for trait_ancestry in ${trait_ancestries[@]}; do
+    mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}/focus
+    focus finemap /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/${trait_ancestry}.gwas.focus /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF/CHR.${CHR} /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/focus_weights/CMC_brain_focus_database.db --chr ${CHR} --plot --p-threshold 5E-08 --out /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}/focus/${trait_ancestry}.5e-8.chr.${CHR} --locations 37:EUR
+done
+
+
+############################
+
+sbatch --array 1-22 ~/focus_agnostic_multitrait_EUR_all_1.sh
+
+# grep "have a nice day!" ~/logs/focus_agnostic_multitrait_EUR_all_1.sh-* | wc -l # 110 = 22 chr * 5 traits. Looks like all ran.
+
+
+
+# Focus processing results for multitrait analysis
+conda activate fusion_final
+R
+library(readr)
+library(data.table)
+
+# traits <- c("ASD_EUR","ADHD_EUR") #  these won't work because there are no HERVs in the rTWAS / conditional analysis / fine-mapping
+traits <- c("BD_EUR","MDD_EUR", "schizophrenia", "ASD_EUR", "ADHD_EUR") 
+# trait <- c("BD_EUR")
+for ( trait in traits ) {
+    print(trait) 
+    res_folder <- paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/focus/")
+    file_list <- list.files(path=res_folder, "5e-8.+.tsv") # breakdown: 5e-8 (contains this string) / .+.tsv (and the string .tsv)
+
+    dat<-NULL
+
+    for (i in 1:length(file_list) ){
+        #######->  filename<-paste0(opt$file_location,file_list[i])
+        filename<-paste0(res_folder,file_list[i])
+        tmp <- read_delim(filename,"\t", escape_double = FALSE, trim_ws = TRUE)
+        dat<-rbind(dat,tmp)
+    }
+
+    focus <- dat
+    write.table(focus, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/focus/",trait,"_focus_output_full_EUR_all_1_5e-8.tsv"), quote=F, sep="\t", row.names=F)
+
+    # retain single of potential duplicates, particularly those with the highest PIP
+    focus <- focus[order(focus$mol_name),]
+    # focus[1:5,c(4,19)] # same gene obtains multiple pip values, due to multiple eQTL effects
+    focus <- unique(setDT(focus)[order(mol_name, -pips_pop1)], by = "mol_name") 
+    # focus[1:5,c(4,19)] # now only associations with highest PIP remain.
+
+    # output HERV features with PIP > 0.5
+    focus_copy <- focus[focus$pips_pop1>0.5,]
+    write.table(focus_copy, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/focus_significant_results_ALL.tsv"), quote=F, sep="\t", col.names=T, row.names=F)
+    focus_copy <- focus_copy[focus_copy$mol_name %like% "_", ]
+    write.table(focus_copy, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/focus_significant_results_HERVs_only.tsv"), quote=F, sep="\t", col.names=T, row.names=F)
+    
+    focus <- focus[focus$mol_name %like% "_",]
+    focus <- focus[focus$pips_pop1 > 0.5, ]  
+    focus <- dplyr::select(focus, mol_name, block_genes, cv.R2_pop1, cv.R2.pval_pop1,block,ldregion_pop1, inference_pop1,twas_z_pop1, pips_pop1, in_cred_set_pop1)
+    names(focus) <- paste0(names(focus),"_focus")
+
+    conditional <- fread(paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/jointly_significant_HERVs"), h=F, stringsAsFactors=F)
+    colnames(conditional) <- c("ID","TWAS.Z","TWAS.P","JOINT.BETA","JOINT.BETA.SE","JOINT.Z","JOINT.P")
+    conditional$`TWAS.P` <- NULL
+    conditional$`TWAS.Z` <- NULL
+
+    fusion <- fread(paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/trait_____all_chr.tsv"), stringsAsFactors=F)
+    fusion$Bonferroni <- p.adjust(fusion$TWAS.P, method="bonferroni")
+    # write.table(fusion, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/weights/fusion_weights_09/TWAS_output/PGC3/SCZ_____all_chr_with_Bonferroni_col.tsv", sep="\t", quote=F, row.names=F, col.names=T)
+    fusion <- fusion[fusion$Bonferroni < 0.05, ]  
+    fusion <- fusion [fusion$ID %like% "_",]
+    fusion$PANEL <- NULL
+    fusion$FILE <- NULL
+
+    merged_1 <- merge(fusion, conditional, by.x="ID", by.y="ID")
+    merged_2 <- merge(merged_1, focus, by.x="ID", by.y="mol_name_focus", keep=ALL)
+    # all.equal(merged_2$TWAS.Z.x,merged_2$TWAS.Z.y)
+
+    write.table(merged_1, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/merged_1_rtwas_and_conditional_EUR_all_1.tsv"), sep="\t", quote=F, row.names=F, col.names=T)
+    write.table(merged_2, paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait,"/merged_2_rtwas_conditional_focus_5e-8_EUR_all_1.tsv"), sep="\t", quote=F, row.names=F, col.names=T)
+
+    # test <- test[!test$ens_gene_id=="NULL.MODEL",]
+    # # grab HERVs by underscore
+    # library(data.table)
+    # test <- test [test$mol_name %like% "_",]
+    # write.table(dat, "/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/focus/output/focus.summary.5e-6.tsv", sep="\t", quote=F, row.names=F, col.names=T)
+}
+
+q("no")
+
+
+######################################################################
+
+trait_ancestries=("BD_EUR" "MDD_EUR" "schizophrenia")
+for trait_ancestry in ${trait_ancestries[@]}; do
+	cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}
+	echo Analysing ${trait_ancestry}. 
+    echo How many rTWAS results are there?
+    cat trait_____all_chr.tsv.Sig | awk 'NR>1' | wc -l 
+    echo But how many rTWAS results are conditionally significant?
+    wc -l jointly_significant_HERVs
+    echo These include:
+    cat jointly_significant_HERVs | awk '{print $1}'
+    echo How many HERVs are significant in the fine-mapping analysis alone?
+    cat focus_significant_results.tsv | awk 'NR>1' | wc -l
+    echo These include:
+    cat focus_significant_results.tsv | awk 'NR>1' | awk '{print $4}'
+    echo "Now, how many rTWAS results are conditionally significant and additionally significant in the fine-mapping analysis (i.e., high confidence risk HERVs)?"
+    cat merged_2_rtwas_conditional_focus_5e-8_EUR_all_1.tsv | awk 'NR>1' | wc -l 
+    echo These include:
+	cat merged_2_rtwas_conditional_focus_5e-8_EUR_all_1.tsv | awk 'NR>1' | awk '{print $1}' 
+    yes '' | sed 5q
+done > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Summary_of_rTWAS-conditional-fine-mapping_analyses.txt
+
+
+
+# Create table containing results of the focus analysis for all disorders:
+conda activate fusion_final
+R
+library(data.table)
+trait_ancestries=c("ADHD_EUR", "ASD_EUR","BD_EUR","MDD_EUR","schizophrenia")
+
+dat<-NULL
+
+for (trait_ancestry in trait_ancestries) {
+	print(trait_ancestry)
+	tmp<- fread(paste0("/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait_ancestry,"/focus_significant_results_ALL.tsv"), stringsAsFactors=F, h=T)
+	tmp<-tmp[ tmp$pips_pop1>0.5 ,]
+	tmp$TRAIT <- as.character(trait_ancestry)
+	tmp <- tmp[order(tmp$pips_pop1),]
+	dat<-rbind(dat,tmp)
+}
+
+dat$TRAIT[grepl("ADHD_EUR",dat$TRAIT)]<-"Attention deficit hyperactivity disorder"
+dat$TRAIT[grepl("ASD_EUR",dat$TRAIT)]<-"Autism spectrum conditions"
+dat$TRAIT[grepl("BD_EUR",dat$TRAIT)]<-"Bipolar disorder"
+dat$TRAIT[grepl("MDD_EUR",dat$TRAIT)]<-"Major depressive disorder"
+dat$TRAIT[grepl("schizophrenia",dat$TRAIT)]<-"Schizophrenia"
+
+dat$ens_gene_id <- NULL
+dat$ens_tx_id <- NULL
+dat$tissue <- NULL
+dat$ref_name <- NULL
+dat$type <- NULL
+dat$inter_z_pop1 <- NULL
+dat <- dat[!dat$mol_name == "NULL",]
+write.table(dat, "~/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Table_S3.tsv", quote=F, sep="\t", col.names=T, row.names=F)

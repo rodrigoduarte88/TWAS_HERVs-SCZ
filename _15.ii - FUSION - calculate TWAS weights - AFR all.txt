@@ -1,0 +1,134 @@
+# AFR only first, entire cohort (cases and controls, 563).
+            # Check the percentage of SNPs in the FUSION LD reference available in the target data .
+            conda activate fusion_final
+            mkdir -p /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all && cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all
+            
+            target_plink="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF_3"
+            ld_ref_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_AFR_LDREF"
+            results_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all"
+            
+            Rscript ~/scratch/programs/Calculating-FUSION-TWAS-weights-pipeline/OP_fusion_ref_overlap_checker.R \
+            --ld_ref_dir ${ld_ref_dir} \
+            --PLINK_prefix ${target_plink} \
+            --output ${results_dir}/overlap_ldref_and_genotype_files.txt
+
+            # Number of SNPs in FUSION LD Reference = 3716229
+            # Number of SNPs in target PLINK files = 3716229
+            # Number of SNPs in both = 3716229
+            # Percentage of SNPs in FUSION LD Reference that are in the target PLINK files = 100%
+
+            ##############################   ~/20240205_fusion_weights_AFR_all_1.sh
+            #!/bin/bash -l
+            #SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job arrays master job allocation number; %a = Job array ID (index) number.
+            #SBATCH -p cpu								# Request a shared node
+            #SBATCH --time=24:00:00 							# format: days-hours:minutes.
+            #SBATCH --mem-per-cpu=20000	
+            #SBATCH --ntasks=1									# requests x cores from any node, per task.
+            # # specify manually to do tests before running: SBATCH --array=1-1000 
+            trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+            conda activate fusion_final
+
+            cd ~/scratch/programs/Calculating-FUSION-TWAS-weights-pipeline # it has to run from this folder!
+            target_plink=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_AFR_LDREF_3
+            ld_ref_dir=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/1000G_AFR_LDREF
+            phenotype_file=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/phenotype_file_adjusted_genes_and_hervs_hg19_AFR_all.txt
+            plink=/users/k1642468/scratch/programs/plink
+            gemma=/users/k1642468/scratch/programs/gemma-0.98.1-linux-static
+            gcta=/users/k1642468/scratch/programs/fusion_twas-master/gcta_nr_robust
+            fusion_software=/users/k1642468/scratch/programs/fusion_twas-master
+            output=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1
+            mkdir -p $output
+
+            coordinate_file=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/coordinates_file_genes_and_hervs_hg19.txt
+            LENGTH_COORDINATE_FILE=$(< "${coordinate_file}" wc -l)
+
+            # `seq 0 250 18500` = {0,250,500,750,....18500} - make sure final number is divisable by mid number (18500/250), and that max number (18500+250) > length of coordinate_file
+            for ITERATION in `seq 0 1500 18000`; do 
+
+            ROWINDEX_0=$((SLURM_ARRAY_TASK_ID)) 
+            ROWINDEX=$((ROWINDEX_0+${ITERATION}))
+            if [ "${ROWINDEX}" -gt "${LENGTH_COORDINATE_FILE}" ] ||  [ "${ROWINDEX}" = 1 ]
+                then 
+                    echo "Nothing to run; skipping row index number ${ROWINDEX}"
+                else
+                    feature_name=$(awk "NR==${ROWINDEX}" <(cut -f 4 -d ' ' ${coordinate_file}))
+                    echo "Something to run; gene or HERV id is ${feature_name}. The row index is ${ROWINDEX}"
+                    Rscript --vanilla ~/scratch/programs/Calculating-FUSION-TWAS-weights-pipeline/OP_TWAS_weights_using_fusion.R \
+                    --PLINK_prefix ${target_plink} \
+                    --phenotype_file ${phenotype_file} \
+                    --coordinate_file ${coordinate_file} \
+                    --gene_name ${feature_name} \
+                    --plink ${plink} \
+                    --gcta ${gcta} \
+                    --gemma ${gemma} \
+                    --ld_ref_dir ${ld_ref_dir} \
+                    --fusion_software ${fusion_software} \
+                    --output_dir ${output}
+                    yes '' | sed 5q
+            fi
+            done
+
+            ##################################################
+            # NOTE: this script is going to run nested "for" loops to go over all rows of coordinates_file, making sure that the index  corresponding to header is ignored (index = 1), or that indexes corresponding to rows > the number of rows in the phenotype file are also ignored. All other numbers should be run! 
+            sbatch --array=1-1500 ~/20240205_fusion_weights_AFR_all_1.sh # array number has to match middle value in "for ITERATION in `seq 0 XXXXX 18500`"
+
+            #### accounting for all genes. 
+            # identify all genes within the coordinates file, and minus the ones that worked, and the ones that didnt work.
+            awk '{print $4}' /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights_229_AFR_all/coordinates_file_genes_and_hervs_hg19.txt | tail -n +2 > ~/gene_names_coordinate_files_AFR_ALL
+
+            # genes that were processed successfully
+            ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.hsq > ~/genes_analysed_hsq_AFR_ALL
+            ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1/Output/*.RDat > ~/genes_analysed_rdat_AFR_ALL
+            # fail messages
+            grep "likely GCTA could not converge" ~/logs/20240205_fusion_weights_AFR_all_1.sh-* > ~/gcta_could_not_converge_AFR_ALL
+            grep ".bed input file does not exist" ~/logs/20240205_fusion_weights_AFR_all_1.sh-* > ~/no_variants_in_cis_window_AFR_ALL
+
+            wc -l ~/gene_names_coordinate_files_AFR_ALL # 18889
+            wc -l ~/genes_analysed_hsq_AFR_ALL          # 18583
+            wc -l ~/genes_analysed_rdat_AFR_ALL         #  6313
+            wc -l ~/gcta_could_not_converge_AFR_ALL     #  245
+            wc -l ~/no_variants_in_cis_window_AFR_ALL   #   61
+
+            # final report:
+            18889 genes in coordinates file                                         # ~/gene_names_coordinate_files
+                18583 hsq files                                                     # ~/genes_analysed_hsq
+                    6313  genes with RDat files too (will be used for TWAS)         # ~/genes_analysed_rdat
+                    12270  hsq file, but no RDat file (i.e., no heritability)         # ~/genes_analysed_hsq - ~/genes_analysed_rdat
+                245 GCTA could not converge (no hsq/rdat)                           #  ~/gcta_could_not_converge
+                61 no variant in cis-window (no hsq/rdat)                           # ~/no_variants_in_cis_window
+            ______________________
+            # All genes accounted for.
+
+
+            # Prepare freshly calculated weights for FUSION format using opain's script:
+            output=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/AFR_all_1
+            coordinate_file=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/fusion_weights/coordinates_file_genes_and_hervs_hg19.txt
+            conda activate fusion_final
+
+            # made modifications to /users/k1642468/scratch/programs/Calculating-FUSION-TWAS-weights-pipeline/OP_packaging_fusion_weights.R to avoid errors (you need to manually add/remove bslmm stats if these are calculated).
+
+            cd /users/k1642468/scratch/programs/Calculating-FUSION-TWAS-weights-pipeline
+            Rscript OP_packaging_fusion_weights.R \
+            --RDat_dir ${output}/Output \
+            --coordinate_file ${coordinate_file} \
+            --output_name CMC \
+            --output_dir ${output}/wrapped/fusion_weights
+
+            #  nano ${output}/wrapped/CMC.profile.err
+    # Average hsq: 0.3038923 ( 0.00196907 )
+    # Average crossvalidation R2:
+    # R2	SE
+    # top1	0.179	0.00192
+    # blup	0.154	0.00165
+    # enet	0.208	0.00209
+    # lasso	0.208	0.00208
+    # bslmm	0.209	0.00203
+    # BEST	0.774
+    # % Model is best:
+    # top1:	22.5%
+    # blup:	7.3%
+    # enet:	20.3%
+    # lasso:	24.8%
+    # bslmm:	25.1%
+

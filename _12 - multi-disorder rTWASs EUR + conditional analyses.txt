@@ -1,0 +1,249 @@
+# Perform the TWAS, changing gwas input file, but using EUR CMC ref pop.
+
+############# ~/fusion_multi_trait_CMCpanel_EUR_all_1_trigger.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+# # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+CHR=${SLURM_ARRAY_TASK_ID}
+
+conda activate fusion_final
+trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+
+for trait_ancestry in "${trait_ancestries[@]}"; do
+	sbatch --export=TRAIT_ANCESTRY=${trait_ancestry},CHROMOSOME=${CHR} ~/fusion_multi_trait_CMCpanel_EUR_all_1_batch.sh
+	sleep 1
+done
+
+#########################################################
+
+
+
+###################### ~/fusion_multi_trait_CMCpanel_EUR_all_1_batch.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+# CHR=22
+conda activate fusion_final
+
+echo "Analyzing ${TRAIT_ANCESTRY}... Chromosome ${CHROMOSOME}"
+
+#trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+# CHR=${SLURM_ARRAY_TASK_ID}
+# for trait_ancestry in ${trait_ancestries[@]}; do
+	sumstats=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/${TRAIT_ANCESTRY}.gwas.fusion
+	weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped.pos"
+	weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1"
+	ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF/CHR."
+	out_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/"${TRAIT_ANCESTRY}
+	mkdir -p ${out_dir}
+	fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+	Rscript --verbose --no-save ${fusion_software_dir}/FUSION.assoc_test.R \
+	--sumstats ${sumstats} \
+	--weights ${weights_pos_file} \
+	--weights_dir ${weights_dir} \
+	--ref_ld_chr ${ref_ld} \
+	--chr ${CHROMOSOME} \
+	--out ${out_dir}/trait.${CHROMOSOME}.dat
+#done
+
+
+###############################################################################
+
+sbatch --array=1-22 ~/fusion_multi_trait_CMCpanel_EUR_all_1_trigger.sh
+
+
+
+
+# combine results to see whether there are significant features, without duplicating header, create Sig file, and generate manhattan biplot, per trait
+conda activate fusion_final
+trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+for trait_ancestry in ${trait_ancestries[@]}; do
+	cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}
+	echo Analysing ${trait_ancestry}
+	head -1  trait.1.dat > trait_____all_chr.tsv
+	tail -n +2 -q trait.* >> trait_____all_chr.tsv
+	pvalue=0.05
+	number_of_unique_genes=8194 # this is the number of RDat files in the SNP weights. Type "ls /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/Output/*.RDat | wc -l"
+	bonferroni_p=`bc -l <<< "scale=50; $pvalue/$number_of_unique_genes"`
+	results_twas_combined="trait_____all_chr.tsv"
+	significant_file=${results_twas_combined}".Sig" 
+	cat ${results_twas_combined} | awk -v var="${bonferroni_p}" 'NR == 1 || $20 < var' > ${significant_file}
+	Rscript ~/scratch/programs/twas-plotter/TWAS-plotter/TWAS-plotter.V1.0.r --twas trait_____all_chr.tsv --width 4000 --height 2500 --output TWAS_plotter_sig_unique_elements_${trait_ancestry}
+	echo How many HERVs?
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" | wc -l
+	echo HERV names:
+	awk -F '\t' '{print $3}'  ${significant_file} | grep -E "_" 
+	yes '' | sed 5q
+done > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Results_multi_trait_analysis_EUR.txt
+
+# Inspect summary in "Results_multi_trait_analysis_EUR.txt"
+
+
+# Perform conditional analyses:
+
+
+############# ~/CONDITIONAL_fusion_multi_trait_CMCpanel_EUR_all_1_trigger.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu							# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+# # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+
+CHR=${SLURM_ARRAY_TASK_ID}
+
+# conda activate fusion_final
+trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+
+for trait_ancestry in "${trait_ancestries[@]}"; do
+	sbatch --export=TRAIT_ANCESTRY=${trait_ancestry},CHROMOSOME=${CHR} ~/CONDITIONAL_fusion_multi_trait_CMCpanel_EUR_all_1_batch.sh
+	sleep 1
+done
+
+#########################################################
+
+
+
+###################### ~/CONDITIONAL_fusion_multi_trait_CMCpanel_EUR_all_1_batch.sh
+#!/bin/bash -l
+#SBATCH -o /users/k1642468/logs/%x-%A-%a.out		# %x = job name (script name); %A = Job array's master job allocation number; %a = Job array ID (index) number.
+#SBATCH -p cpu								# Request a shared node
+#SBATCH --time=0-2:00:00 							# format: days-hours:minutes.
+#SBATCH --mem-per-cpu=20000							# 9GB, in Mb - if unspecified, task will be given 1 GB only.
+#SBATCH --ntasks=1									# requests x cores from any node, per task.
+    # # SBATCH --array=1-22								# range%constainvalue => 1-22%4 would constrain 22 tasks to 4 at a time 
+
+trap 'echo "# $(date) (time) $BASH_COMMAND"' DEBUG
+conda activate fusion_final
+
+
+#CHR=${SLURM_ARRAY_TASK_ID}
+# trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+# for trait_ancestry in ${trait_ancestries[@]}; do
+	sumstats=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/gwas/multitrait/${TRAIT_ANCESTRY}.gwas.fusion
+	weights_pos_file="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/CMC_wrapped.pos"
+	weights_dir="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1"
+	ref_ld="/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/reference_panel_own/CMC_EUR_LDREF/CHR."
+	fusion_software_dir="/users/k1642468/scratch/programs/fusion_twas-master"
+	results_twas_combined=/users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${TRAIT_ANCESTRY}/trait_____all_chr.tsv
+	significant_file=${results_twas_combined}.Sig 
+	status=$(awk -v var="${CHROMOSOME}" '$4 == var {print "Present";exit;}' ${significant_file})
+		if [ "$status" == "Present" ]; then
+			echo "Chromosome ${CHROMOSOME} is present in ${TRAIT_ANCESTRY}. Processing..."	
+			Rscript ${fusion_software_dir}/FUSION.post_process.R \
+			--input ${significant_file} \
+			--sumstats ${sumstats} \
+			--ref_ld_chr ${ref_ld} \
+			--out ${significant_file}.PostProc.${CHROMOSOME} \
+			--chr ${CHROMOSOME} \
+			--save_loci \
+			--plot \
+			--locus_win 1000000
+		else
+			echo "Chromosome ${CHROMOSOME} not present in ${TRAIT_ANCESTRY}"
+		fi
+# done 
+
+
+##############################################
+sbatch --array=1-22 ~/CONDITIONAL_fusion_multi_trait_CMCpanel_EUR_all_1_trigger.sh
+
+
+
+
+trait_ancestries=("BD_EUR" "MDD_EUR" "ASD_EUR" "ADHD_EUR" "schizophrenia")
+for trait_ancestry in ${trait_ancestries[@]}; do
+	echo ${trait_ancestry}
+	cd /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/${trait_ancestry}
+	rm -f jointly_significant_HERVs
+	cat trait_____all_chr.tsv.Sig.PostProc.*.joint_included.dat  | cut -f2- | grep "_" >> jointly_significant_HERVs 
+	echo How many and which HERVs are conditionally independent for ${trait_ancestry}?
+	wc -l jointly_significant_HERVs  
+	cat jointly_significant_HERVs 
+	echo How many and which HERVs were dropped from conditional analysis for ${trait_ancestry}?
+	rm -f dropped_in_conditional_analysis_HERVs
+	cat trait_____all_chr.tsv.Sig.PostProc.*.joint_dropped.dat  | cut -f2- | grep "_" >> dropped_in_conditional_analysis_HERVs
+	wc -l dropped_in_conditional_analysis_HERVs 
+	cat dropped_in_conditional_analysis_HERVs
+	echo "ID      TWAS.Z  TWAS.P  JOINT.BETA      JOINT.BETA.SE   JOINT.Z JOINT.P"  > jointly_significant_HERVs_and_genes_${trait_ancestry}
+	cat trait_____all_chr.tsv.Sig.PostProc.*.joint_included.dat  | cut -f2- | grep -v "TWAS.Z" >> jointly_significant_HERVs_and_genes_${trait_ancestry}
+	yes '' | sed 5q
+done > /users/k1642468/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Results_multi_trait_analysis_EUR_conditional_analyses.txt
+
+# Inspect summary in "Results_multi_trait_analysis_EUR_conditional_analyses.txt"
+ 
+
+
+
+
+
+# Create table containing results of the main analysis for all disorders:
+conda activate fusion_final
+R
+library(data.table)
+trait_ancestries=c("ADHD_EUR", "ASD_EUR","BD_EUR","MDD_EUR","schizophrenia")
+
+dat<-NULL
+
+for (trait_ancestry in trait_ancestries) {
+	print(trait_ancestry)
+	tmp<- fread(paste0("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait_ancestry,"/trait_____all_chr.tsv"), stringsAsFactors=F, h=T)
+	tmp<-tmp[!is.na(tmp$'TWAS.P'),]
+	tmp$'TWAS.Bonferroni.P' <- p.adjust(tmp$'TWAS.P', method="bonferroni")
+	tmp<-tmp[ tmp$'TWAS.Bonferroni.P'<0.05 ,]
+	tmp$TRAIT <- as.character(trait_ancestry)
+	tmp <- tmp[order(tmp$'TWAS.P'),]
+	dat<-rbind(dat,tmp)
+}
+
+dat$GWAS_pop <- "EUR"
+dat$rTWAS_weights_pop <- "EUR"
+dat$FILE <- NULL
+dat$PANEL <- NULL
+
+dat$TRAIT[grepl("ADHD_EUR",dat$TRAIT)]<-"Attention deficit hyperactivity disorder"
+dat$TRAIT[grepl("ASD_EUR",dat$TRAIT)]<-"Autism spectrum conditions"
+dat$TRAIT[grepl("BD_EUR",dat$TRAIT)]<-"Bipolar disorder"
+dat$TRAIT[grepl("MDD_EUR",dat$TRAIT)]<-"Major depressive disorder"
+dat$TRAIT[grepl("schizophrenia",dat$TRAIT)]<-"Schizophrenia"
+
+write.table(dat, "~/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Table_S1.tsv", quote=F, sep="\t", col.names=T, row.names=F)
+
+# now create summary of the conditional analysis for all disorders:
+dat<-NULL
+
+for (trait_ancestry in trait_ancestries) {
+	print(trait_ancestry)
+	tmp<- fread(paste0("~/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/",trait_ancestry,"/jointly_significant_HERVs_and_genes_",trait_ancestry), stringsAsFactors=F, h=F)
+	colnames(tmp)<- c("ID","TWAS.Z","TWAS.P","JOINT.BETA","JOINT.BETA.SE","JOINT.Z","JOINT.P")
+	tmp <- tmp[order(tmp$'TWAS.P'),]
+	tmp$TRAIT <- as.character(trait_ancestry)
+	dat<-rbind(dat,tmp)
+}
+
+dat$TRAIT[grepl("ADHD_EUR",dat$TRAIT)]<-"Attention deficit hyperactivity disorder"
+dat$TRAIT[grepl("ASD_EUR",dat$TRAIT)]<-"Autism spectrum conditions"
+dat$TRAIT[grepl("BD_EUR",dat$TRAIT)]<-"Bipolar disorder"
+dat$TRAIT[grepl("MDD_EUR",dat$TRAIT)]<-"Major depressive disorder"
+dat$TRAIT[grepl("schizophrenia",dat$TRAIT)]<-"Schizophrenia"
+
+write.table(dat, "~/commonmind/Rodrigo/TWAS_HERVs_SCZ/rTWAS/EUR_all_1/results/Table_S2.tsv", quote=F, sep="\t", col.names=T, row.names=F)
+
+
+
