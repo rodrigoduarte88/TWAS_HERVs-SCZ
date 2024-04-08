@@ -1,0 +1,2 @@
+Code used in:
+Rodrigo R. R. Duarte, Oliver Pain, Matthew L. Bendall, Miguel de Mulder Rougvie, Jez L. Marston, Sashika Selvackadunco, Claire Troakes, Szi Kay Leung, Rosie Bamford, Jonathan Mill, Paul F. O’Reilly, Deepak P. Srivastava, Douglas F. Nixon, and Timothy R. Powell. Integrating human endogenous retroviruses into transcriptome-wide association studies highlights novel risk factors for major psychiatric conditions. Nature Communications, Accepted.
